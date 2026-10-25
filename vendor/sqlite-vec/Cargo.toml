@@ -1,0 +1,19 @@
+[package]
+name = "sqlite-vec"
+version = "0.1.10-alpha.4"
+edition = "2021"
+description = "Vendored sqlite-vec extension (diskann disabled) for Herald"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/asg017/sqlite-vec"
+build = "build.rs"
+publish = false
+
+[lib]
+name = "sqlite_vec"
+path = "src/lib.rs"
+
+[build-dependencies]
+cc = "1"
+
+[dev-dependencies]
+rusqlite = { version = "0.37", features = ["bundled"] }

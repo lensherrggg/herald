@@ -1,0 +1,41 @@
+[package]
+name = "herald-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Local ONNX embeddings + HuggingFace/mirror model download (CLI/TUI only).
+semantic = ["dep:fastembed", "dep:reqwest", "dep:futures-util"]
+# Mock POP3 server used by integration tests.
+test-support = ["dep:rcgen"]
+
+[dependencies]
+base64.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+encoding_rs.workspace = true
+fastembed = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+jieba-rs.workspace = true
+mail-parser.workspace = true
+reqwest = { workspace = true, optional = true }
+rusqlite.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+rustls-pki-types.workspace = true
+rcgen = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+sqlite-vec.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+toml.workspace = true
+tracing.workspace = true
+webpki-roots.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,55 @@
+[workspace]
+members = [
+    "crates/herald-core",
+    "crates/herald-cli",
+    "crates/herald-mcp",
+    "crates/herald-tui",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+authors = ["Herald contributors"]
+description = "Herald - a read-only, portable POP3 mailbox client for AI agents"
+
+[workspace.dependencies]
+herald-core = { path = "crates/herald-core" }
+
+anyhow = "1"
+async-trait = "0.1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+crossterm = "0.29"
+dirs = "6"
+encoding_rs = "0.8"
+fastembed = { version = "7.5", default-features = false, features = ["ort-download-binaries-rustls-tls"] }
+futures-util = "0.3"
+jieba-rs = "0.11"
+mail-parser = { version = "0.11.3", features = ["full_encoding"] }
+ratatui = "0.30"
+rcgen = "0.14"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+rusqlite = { version = "0.37", default-features = false, features = ["bundled"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+rustls-pki-types = "1"
+rust-mcp-sdk = { version = "1.1", default-features = false, features = ["server", "stdio", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlite-vec = { path = "vendor/sqlite-vec" }
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "fs", "signal"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+webpki-roots = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
