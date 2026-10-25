@@ -248,7 +248,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             Mode::Accounts => "↑↓ 选择 · Enter 切换 · Esc 取消",
             Mode::Attachments => "↑↓ 选择附件 · Enter 导出 · Esc 取消",
             Mode::Browser => {
-                "↑↓ 选择 · Enter 进入 · 退格 上级 · / 筛选 · d 保存 · f 改名 · n 新建 · Esc 取消"
+                "↑↓ 选择 · Enter 进入 · 退格 上级 · z 跳转 · / 筛选 · d 保存 · f 改名 · n 新建 · Esc 取消"
             }
             Mode::Raw => {
                 let editing = app.raw_search.as_ref().is_some_and(|search| search.editing);
@@ -462,7 +462,7 @@ fn draw_browser(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(filename), chunks[filename_chunk]);
 
     let note = browser.note.clone().unwrap_or_else(|| {
-        "Enter 进入/选文件 · 退格 上级 · / 筛选 · d 存入当前目录 · f 改名".to_string()
+        "Enter 进入/选文件 · 退格 上级 · z 跳转 · / 筛选 · d 存入当前目录 · f 改名".to_string()
     });
     frame.render_widget(
         Paragraph::new(Span::styled(
@@ -475,6 +475,60 @@ fn draw_browser(frame: &mut Frame, app: &App) {
         )),
         chunks[note_chunk],
     );
+    draw_browser_jump(frame, app, browser);
+}
+
+fn draw_browser_jump(frame: &mut Frame, app: &App, browser: &Browser) {
+    let Some(jump) = &browser.jump else {
+        return;
+    };
+    let height = (jump.matches.len() as u16 + 3).clamp(5, 14);
+    let area = centered_fixed(frame.area(), 76, height);
+    if area.width < 20 || area.height < 4 {
+        return;
+    }
+    frame.render_widget(Clear, area);
+    let block = panel(
+        " 跳转目录（z）· 输入名称片段 · Enter 跳转 · Esc 取消 ",
+        true,
+        app,
+    );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(inner);
+
+    let (before, after) = crate::text_input::split_at(&jump.query, jump.cursor);
+    let input = Line::from(vec![
+        Span::styled("z ", Style::new().add_modifier(Modifier::DIM)),
+        Span::raw(before.to_string()),
+        Span::styled("█", accent(app)),
+        Span::raw(after.to_string()),
+    ]);
+    frame.render_widget(Paragraph::new(input), chunks[0]);
+
+    if jump.matches.is_empty() {
+        let hint = if jump.query.trim().is_empty() {
+            "还没有访问记录；从列表进入目录后即可跳转"
+        } else {
+            "没有匹配的目录；可输入完整绝对路径"
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(hint, Style::new().add_modifier(Modifier::DIM))),
+            chunks[1],
+        );
+        return;
+    }
+
+    let items: Vec<ListItem> = jump
+        .matches
+        .iter()
+        .map(|path| ListItem::new(path.display().to_string()))
+        .collect();
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::TOP))
+        .highlight_style(selected(app));
+    let mut state = ListState::default().with_selected(Some(jump.selected));
+    frame.render_stateful_widget(list, chunks[1], &mut state);
 }
 
 fn draw_browser_filter(frame: &mut Frame, app: &App, browser: &Browser, area: Rect) {
@@ -669,7 +723,7 @@ fn draw_help(frame: &mut Frame, app: &App) {
         Line::from("Tab          切换列表/详情焦点"),
         Line::from("r            查看原始邮件（/ 查找，n/N 跳转）"),
         Line::from("e            导出附件（内置文件浏览器）"),
-        Line::from("  浏览器      ↑↓ 选择 · Enter 进入 · 退格 上级 · / 筛选 · d 保存"),
+        Line::from("  浏览器      ↑↓ 选择 · Enter 进入 · 退格 上级 · z 跳转 · / 筛选 · d 保存"),
         Line::from("Esc          清除搜索 / 返回"),
         Line::from("q / Ctrl+C   退出"),
         Line::from(""),

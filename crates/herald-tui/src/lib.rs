@@ -1,5 +1,6 @@
 pub mod app;
 pub mod browser;
+mod dir_history;
 mod text_input;
 pub mod ui;
 

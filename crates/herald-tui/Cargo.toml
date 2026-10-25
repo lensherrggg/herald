@@ -9,6 +9,8 @@ herald-core = { workspace = true, features = ["semantic"] }
 anyhow.workspace = true
 crossterm.workspace = true
 ratatui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 unicode-width.workspace = true
 

@@ -2,7 +2,9 @@ use std::path::Path;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use herald_core::mock_pop3::{MockConfig, MockMessage, MockPop3Server};
-use herald_core::model::{MessageDetail, MessageHeader, SearchField, SearchKind, SyncOptions};
+use herald_core::model::{
+    AttachmentMeta, MessageDetail, MessageHeader, SearchField, SearchKind, SyncOptions,
+};
 use herald_core::Herald;
 use herald_tui::app::{App, Focus};
 use herald_tui::browser::Browser;
@@ -969,4 +971,70 @@ fn export_browser_filters_and_jumps_to_absolute_paths() {
     app.handle_key(key(KeyCode::Enter));
     assert_eq!(app.browser.as_ref().unwrap().dir, target);
     assert!(app.browser.as_ref().unwrap().filter.is_empty());
+}
+
+#[test]
+fn export_browser_jumps_to_a_recently_visited_directory() {
+    let (mut app, dir) = synced_app(20, vec![message_one()]);
+    let exports = dir.path().join("exports");
+    let reports = exports.join("reports");
+    let target = reports.join("2026");
+    std::fs::create_dir_all(&target).unwrap();
+
+    let meta = AttachmentMeta {
+        index: 0,
+        filename: Some("a.bin".to_string()),
+        mime_type: None,
+        size: 1,
+        content_id: None,
+        is_inline: false,
+        has_content: true,
+    };
+    app.open_browser("m1".to_string(), &meta);
+    assert_eq!(app.browser.as_ref().unwrap().dir, exports);
+    assert!(
+        app.paths().config_dir.join("dir_history.json").is_file(),
+        "opening the browser must persist the visit history"
+    );
+
+    for name in ["reports", "2026"] {
+        let browser = app.browser.as_mut().unwrap();
+        browser.selected = browser
+            .entries
+            .iter()
+            .position(|entry| entry.name == name)
+            .unwrap();
+        app.handle_key(key(KeyCode::Enter));
+    }
+    assert_eq!(app.browser.as_ref().unwrap().dir, target);
+    app.handle_key(key(KeyCode::Backspace));
+    app.handle_key(key(KeyCode::Backspace));
+    assert_eq!(app.browser.as_ref().unwrap().dir, exports);
+
+    app.handle_key(key(KeyCode::Char('z')));
+    assert!(app.browser.as_ref().unwrap().jump.is_some());
+    let screen = compact(&render(&app, 100, 40));
+    assert!(screen.contains("跳转目录"), "{screen}");
+    for ch in "2026".chars() {
+        app.handle_key(key(KeyCode::Char(ch)));
+    }
+    let jump = app.browser.as_ref().unwrap().jump.as_ref().unwrap();
+    assert_eq!(jump.query, "2026");
+    assert_eq!(jump.matches.first(), Some(&target));
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.browser.as_ref().unwrap().dir, target);
+    assert!(app.browser.as_ref().unwrap().jump.is_none());
+    assert!(
+        app.status_text().contains("已跳转"),
+        "{}",
+        app.status_text()
+    );
+
+    app.handle_key(key(KeyCode::Char('z')));
+    app.handle_key(key(KeyCode::Esc));
+    assert!(
+        app.browser.as_ref().unwrap().jump.is_none(),
+        "Esc closes the jump overlay without changing directories"
+    );
+    assert_eq!(app.browser.as_ref().unwrap().dir, target);
 }

@@ -13,6 +13,7 @@ use tokio::runtime::Runtime;
 use unicode_width::UnicodeWidthChar;
 
 use crate::browser::{sanitize_filename, Browser};
+use crate::dir_history::DirHistory;
 use crate::text_input;
 use crate::ui;
 
@@ -654,10 +655,13 @@ impl App {
             .unwrap_or_else(|| format!("attachment-{}", index + 1));
         let name = sanitize_filename(&original, index);
         let start = self.herald.export_base_dir();
-        self.browser = Some(Browser::new(start, uidl, index, name));
+        let mut browser = Browser::new(start, uidl, index, name);
+        let history_file = self.herald.paths.config_dir.join("dir_history.json");
+        browser.attach_history(DirHistory::load(history_file));
+        self.browser = Some(browser);
         self.mode = Mode::Browser;
         self.status = StatusMessage::info(
-            "↑↓ 选择 · Enter 进入 · 退格/← 上一级 · / 筛选 · d 存入当前目录 · f 改名",
+            "↑↓ 选择 · Enter 进入 · 退格/← 上一级 · z 跳转 · / 筛选 · d 存入当前目录 · f 改名",
         );
     }
 
@@ -1014,6 +1018,62 @@ impl App {
             self.mode = Mode::Browse;
             return;
         };
+        if browser.jump.is_some() {
+            match key.code {
+                KeyCode::Esc => browser.cancel_jump(),
+                KeyCode::Enter => {
+                    if let Some(path) = browser.jump_to_selected() {
+                        self.status = StatusMessage::info(format!("已跳转：{}", path.display()));
+                    } else {
+                        self.status = StatusMessage::error("没有匹配的目录");
+                    }
+                }
+                KeyCode::Down | KeyCode::Tab => browser.move_jump(1),
+                KeyCode::Up => browser.move_jump(-1),
+                KeyCode::PageDown => browser.move_jump(9),
+                KeyCode::PageUp => browser.move_jump(-9),
+                KeyCode::Left => {
+                    if let Some(jump) = browser.jump.as_mut() {
+                        jump.cursor = text_input::prev_cursor(&jump.query, jump.cursor);
+                    }
+                }
+                KeyCode::Right => {
+                    if let Some(jump) = browser.jump.as_mut() {
+                        jump.cursor = text_input::next_cursor(&jump.query, jump.cursor);
+                    }
+                }
+                KeyCode::Home => {
+                    if let Some(jump) = browser.jump.as_mut() {
+                        jump.cursor = 0;
+                    }
+                }
+                KeyCode::End => {
+                    if let Some(jump) = browser.jump.as_mut() {
+                        jump.cursor = jump.query.len();
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let Some(jump) = browser.jump.as_mut() {
+                        text_input::backspace(&mut jump.query, &mut jump.cursor);
+                    }
+                    browser.update_jump();
+                }
+                KeyCode::Delete => {
+                    if let Some(jump) = browser.jump.as_mut() {
+                        text_input::delete(&mut jump.query, &mut jump.cursor);
+                    }
+                    browser.update_jump();
+                }
+                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if let Some(jump) = browser.jump.as_mut() {
+                        text_input::insert_char(&mut jump.query, &mut jump.cursor, ch);
+                    }
+                    browser.update_jump();
+                }
+                _ => {}
+            }
+            return;
+        }
         if browser.filtering {
             match key.code {
                 KeyCode::Esc => {
@@ -1022,11 +1082,7 @@ impl App {
                 }
                 KeyCode::Enter => {
                     if let Some(target) = browser.filter_jump_target() {
-                        browser.dir = target;
-                        browser.selected = 0;
-                        browser.note = None;
-                        browser.clear_filter();
-                        browser.refresh();
+                        browser.jump_to_path(target);
                     } else {
                         browser.filtering = false;
                     }
@@ -1110,6 +1166,7 @@ impl App {
                 browser.filtering = true;
                 browser.filter_cursor = browser.filter.len();
             }
+            KeyCode::Char('z') => browser.open_jump(),
             KeyCode::Down | KeyCode::Char('j') => browser.move_by(1),
             KeyCode::Up | KeyCode::Char('k') => browser.move_by(-1),
             KeyCode::PageDown => browser.move_by(10),

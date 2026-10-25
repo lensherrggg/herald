@@ -1,11 +1,25 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::dir_history::DirHistory;
+
+const JUMP_LIMIT: usize = 9;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowserEntry {
     pub name: String,
     pub path: PathBuf,
     pub is_dir: bool,
+}
+
+/// In-progress `z` jump: a fuzzy query over the directory history and the
+/// ranked candidates it produced.
+#[derive(Debug, Default)]
+pub struct JumpState {
+    pub query: String,
+    pub cursor: usize,
+    pub matches: Vec<PathBuf>,
+    pub selected: usize,
 }
 
 #[derive(Debug)]
@@ -24,6 +38,8 @@ pub struct Browser {
     pub attachment_index: usize,
     pub original_name: String,
     pub note: Option<String>,
+    pub history: DirHistory,
+    pub jump: Option<JumpState>,
 }
 
 impl Browser {
@@ -49,9 +65,18 @@ impl Browser {
             attachment_index,
             original_name,
             note,
+            history: DirHistory::default(),
+            jump: None,
         };
         browser.refresh();
         browser
+    }
+
+    /// Load the persistent visit history and count the starting directory as
+    /// a visit, so the first `z` already has a candidate.
+    pub fn attach_history(&mut self, mut history: DirHistory) {
+        history.record(&self.dir);
+        self.history = history;
     }
 
     pub fn refresh(&mut self) {
@@ -150,11 +175,7 @@ impl Browser {
             return;
         };
         if entry.is_dir {
-            self.dir = entry.path;
-            self.selected = 0;
-            self.note = None;
-            self.clear_filter();
-            self.refresh();
+            self.jump_to_path(entry.path);
         } else {
             self.filename = entry.name;
             self.filename_cursor = self.filename.len();
@@ -171,12 +192,73 @@ impl Browser {
         if parent == self.dir {
             return false;
         }
-        self.dir = parent;
+        self.jump_to_path(parent)
+    }
+
+    /// Switch to `path` and remember the visit. Used by Enter, the parent key
+    /// and every jump, so history reflects how the user actually moved.
+    pub fn jump_to_path(&mut self, path: PathBuf) -> bool {
+        if !path.is_dir() {
+            return false;
+        }
+        self.dir = path;
         self.selected = 0;
         self.note = None;
         self.clear_filter();
         self.refresh();
+        self.history.record(&self.dir);
         true
+    }
+
+    pub fn open_jump(&mut self) {
+        self.jump = Some(JumpState::default());
+        self.update_jump();
+    }
+
+    /// Re-rank candidates after the query changed; the top hit becomes the
+    /// selection so Enter jumps to the best match straight away.
+    pub fn update_jump(&mut self) {
+        if let Some(jump) = self.jump.as_mut() {
+            jump.matches = self
+                .history
+                .search(&jump.query, JUMP_LIMIT, Some(&self.dir));
+            jump.selected = 0;
+        }
+    }
+
+    pub fn move_jump(&mut self, delta: isize) {
+        let Some(jump) = self.jump.as_mut() else {
+            return;
+        };
+        if jump.matches.is_empty() {
+            jump.selected = 0;
+            return;
+        }
+        let last = jump.matches.len() as isize - 1;
+        jump.selected = (jump.selected as isize + delta).clamp(0, last) as usize;
+    }
+
+    pub fn cancel_jump(&mut self) {
+        self.jump = None;
+    }
+
+    /// The highlighted candidate, or an existing absolute path typed in full.
+    pub fn jump_target(&self) -> Option<PathBuf> {
+        let jump = self.jump.as_ref()?;
+        if let Some(path) = jump.matches.get(jump.selected) {
+            return Some(path.clone());
+        }
+        let typed = PathBuf::from(jump.query.trim());
+        (typed.is_absolute() && typed.is_dir()).then_some(typed)
+    }
+
+    pub fn jump_to_selected(&mut self) -> Option<PathBuf> {
+        let target = self.jump_target()?;
+        if !self.jump_to_path(target.clone()) {
+            return None;
+        }
+        self.jump = None;
+        Some(target)
     }
 
     pub fn focus_filename(&mut self) {
@@ -446,6 +528,38 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["..", "alpha"]);
         assert_eq!(browser.filter_jump_target(), Some(target));
+    }
+
+    #[test]
+    fn jumps_to_a_fuzzy_history_match_and_records_the_visit() {
+        let temp = tempfile::tempdir().unwrap();
+        let start = temp.path().join("start");
+        let target = temp.path().join("Projects").join("zz-unique-target");
+        fs::create_dir_all(&start).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        let history_file = temp.path().join("dir_history.json");
+        {
+            let mut history = DirHistory::load(history_file.clone());
+            history.record(&target);
+        }
+
+        let mut browser = Browser::new(start.clone(), "uidl".to_string(), 0, "a.bin".to_string());
+        browser.attach_history(DirHistory::load(history_file.clone()));
+        browser.open_jump();
+        assert_eq!(browser.jump.as_ref().unwrap().matches, vec![target.clone()]);
+
+        browser.jump.as_mut().unwrap().query = "zztarget".to_string();
+        browser.update_jump();
+        assert!(browser.jump.as_ref().unwrap().matches.contains(&target));
+        assert_eq!(browser.jump_target(), Some(target.clone()));
+        assert_eq!(browser.jump_to_selected(), Some(target.clone()));
+        assert_eq!(browser.dir, target);
+        assert!(browser.jump.is_none());
+
+        let reloaded = DirHistory::load(history_file);
+        let paths = reloaded.search("", 10, None);
+        assert!(paths.contains(&start), "{paths:?}");
+        assert!(paths.contains(&target), "{paths:?}");
     }
 
     #[test]

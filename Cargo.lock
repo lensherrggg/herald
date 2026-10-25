@@ -1167,6 +1167,8 @@ dependencies = [
  "crossterm",
  "herald-core",
  "ratatui",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "unicode-width",
