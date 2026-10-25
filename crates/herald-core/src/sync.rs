@@ -52,6 +52,15 @@ pub async fn run_with_options(
     } else {
         client.list().await.unwrap_or_default()
     };
+    tracing::info!(
+        account = %account.name,
+        host = %account.host,
+        port = account.port,
+        server_messages = server_uidls.len(),
+        known = known.len(),
+        limit = ?limit,
+        "开始同步邮件"
+    );
 
     let threshold = config.sync.auto_body_max_size;
     let max_attachment = config.attachments.max_attachment_size_bytes;
@@ -66,6 +75,7 @@ pub async fn run_with_options(
         fetched += 1;
         let size = sizes.get(number).copied().unwrap_or(0);
         let need_body = options.with_body || threshold == 0 || size == 0 || size <= threshold;
+        tracing::debug!(%uidl, number, size, need_body, "处理新邮件");
         match process_one(
             &mut client,
             store,
@@ -117,6 +127,15 @@ pub async fn run_with_options(
     let synced_at =
         store.update_sync_state(account_id, last_uidl.as_deref(), server_uidls.len())?;
     let _ = client.quit().await;
+    tracing::info!(
+        account = %account.name,
+        fetched,
+        new_count,
+        bodies_cached,
+        attachments_stored,
+        errors = errors.len(),
+        "同步结束"
+    );
 
     Ok(SyncOutcome {
         report: SyncReport {

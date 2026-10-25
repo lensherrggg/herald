@@ -283,7 +283,7 @@ cargo run -p herald-core --features test-support --example mock_pop3 -- --dir D:
 }
 ```
 
-也可以用环境变量 `HERALD_CONFIG` 指定配置。传输仅支持 **stdio**；日志写 stderr（默认 `warn`，可用 `HERALD_LOG` 调整），不会污染 JSON-RPC 通道。
+也可以用环境变量 `HERALD_CONFIG` 指定配置。传输仅支持 **stdio**；日志写入本地 `logs/` 并同步到 stderr（默认 `warn`，可用 `HERALD_LOG` 调整），不会污染 JSON-RPC 通道。
 
 #### 工具
 
@@ -315,6 +315,7 @@ cargo run -p herald-core --features test-support --example mock_pop3 -- --dir D:
 | 数据库 | 配置所在目录 / `herald.db`（可由 `database` 覆盖，相对路径按配置文件目录解析） |
 | 模型 | 配置所在目录 / `models/<model_name>/`（可由 `semantic.model_path` 覆盖） |
 | Tokenizer | 默认与模型目录相同（可由 `semantic.tokenizer_path` 单独覆盖） |
+| 日志 | 配置/数据目录 / `logs/herald.YYYY-MM-DD.log`（按天滚动，保留 14 天） |
 | 上次导出目录 | 数据库内 `local_state` 表 |
 
 如果可执行文件目录不可写，Herald 自动降级到用户目录，并在启动日志中打印原因：
@@ -324,6 +325,16 @@ cargo run -p herald-core --features test-support --example mock_pop3 -- --dir D:
 - Windows：`%APPDATA%\herald\`
 
 `herald tui` 的 `h` 帮助页会显示实际生效的配置/数据库/模型/Tokenizer 路径及其存放模式；CLI 启动日志同样输出这些信息。
+
+日志按天写入配置/数据目录下的 `logs/herald.YYYY-MM-DD.log`，默认保留最近 14 天。排查时不用重开终端：
+
+```powershell
+Get-Content .\logs\herald.2026-10-25.log -Tail 50 -Wait
+$env:HERALD_LOG = "debug"
+.\herald.exe --config herald.toml sync
+```
+
+默认级别 `info`：记录实际使用的配置与数据库路径、每次同步的服务器/本地 UIDL 计数和结果；连接/认证失败记为 `error`，单封失败记为 `warn`。`HERALD_LOG`（或 `RUST_LOG`）可取 `error|warn|info|debug|trace`。CLI 与 MCP 同时保留终端输出（MCP 默认 `warn`）；TUI 只写文件，避免日志破坏全屏界面。日志不含密码，也不写邮件正文。
 
 ---
 

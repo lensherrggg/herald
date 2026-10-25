@@ -3,11 +3,11 @@ use std::process::ExitCode;
 
 use anyhow::{bail, Context};
 use clap::{Parser, Subcommand};
+use herald_core::logging::{self, StderrLogging};
 use herald_core::model::{MessageFilter, SearchField, SearchKind, SearchOptions, SyncOptions};
 use herald_core::paths::PathLayout;
 use herald_core::time;
 use herald_core::{Config, Herald};
-use tracing_subscriber::EnvFilter;
 
 const BODY_PREVIEW_LIMIT: usize = 32 * 1024;
 
@@ -186,12 +186,23 @@ enum ModelsCommand {
 }
 
 fn main() -> ExitCode {
-    init_tracing();
     let Cli {
         config,
         json,
         command,
     } = Cli::parse();
+    let tui = matches!(&command, Command::Tui { .. });
+    let log_dir = PathLayout::resolve(config.as_deref())
+        .ok()
+        .map(|layout| layout.log_dir());
+    let _logging = logging::init(
+        log_dir.as_deref(),
+        if tui {
+            StderrLogging::Off
+        } else {
+            StderrLogging::Info
+        },
+    );
     let result = match command {
         Command::Tui { account } => herald_tui::run(config, account),
         command => match tokio::runtime::Builder::new_multi_thread()
@@ -209,19 +220,6 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-fn init_tracing() {
-    let filter = std::env::var("HERALD_LOG")
-        .ok()
-        .and_then(|value| EnvFilter::try_new(value).ok())
-        .or_else(|| EnvFilter::try_from_default_env().ok())
-        .unwrap_or_else(|| EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .with_target(false)
-        .try_init();
 }
 
 async fn run(config: Option<PathBuf>, json: bool, command: Command) -> anyhow::Result<()> {

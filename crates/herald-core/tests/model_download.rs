@@ -70,6 +70,7 @@ fn paths(dir: &std::path::Path) -> ResolvedPaths {
         config_path: dir.join("herald.toml"),
         config_dir: dir.to_path_buf(),
         database_path: dir.join("herald.db"),
+        log_dir: dir.join("logs"),
         models_dir: dir.join("models"),
         tokenizer_dir: dir.join("models"),
         portable: true,

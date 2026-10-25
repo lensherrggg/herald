@@ -20,6 +20,7 @@ pub struct ResolvedPaths {
     pub config_path: PathBuf,
     pub config_dir: PathBuf,
     pub database_path: PathBuf,
+    pub log_dir: PathBuf,
     pub models_dir: PathBuf,
     pub tokenizer_dir: PathBuf,
     pub portable: bool,
@@ -84,6 +85,10 @@ impl PathLayout {
         })
     }
 
+    pub fn log_dir(&self) -> PathBuf {
+        self.data_dir.join("logs")
+    }
+
     pub fn complete(&self, config: &Config) -> ResolvedPaths {
         let database_path = match &config.database {
             Some(database) => crate::config::resolve_relative(&self.config_dir, database),
@@ -104,6 +109,7 @@ impl PathLayout {
             config_path: self.config_path.clone(),
             config_dir: self.config_dir.clone(),
             database_path,
+            log_dir: self.log_dir(),
             models_dir,
             tokenizer_dir,
             portable: self.portable,
@@ -117,6 +123,7 @@ impl ResolvedPaths {
         let mut lines = vec![
             format!("配置文件：{}", self.config_path.display()),
             format!("数据库：{}", self.database_path.display()),
+            format!("日志目录：{}", self.log_dir.display()),
             format!("模型目录：{}", self.models_dir.display()),
             format!("Tokenizer 目录：{}", self.tokenizer_dir.display()),
             format!(
@@ -247,6 +254,7 @@ tokenizer_path = "tokenizers/zh"
             config_path: PathBuf::from("c"),
             config_dir: PathBuf::from("c"),
             database_path: PathBuf::from("d"),
+            log_dir: PathBuf::from("l"),
             models_dir: PathBuf::from("m"),
             tokenizer_dir: PathBuf::from("t"),
             portable: false,

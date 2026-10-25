@@ -6,6 +6,7 @@
 pub mod config;
 pub mod demo;
 pub mod error;
+pub mod logging;
 pub mod mock_pop3;
 pub mod model;
 pub mod parse;

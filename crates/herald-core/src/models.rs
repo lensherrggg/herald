@@ -314,6 +314,7 @@ mod tests {
             config_path: PathBuf::from("c/herald.toml"),
             config_dir: PathBuf::from("c"),
             database_path: PathBuf::from("c/herald.db"),
+            log_dir: PathBuf::from("c/logs"),
             models_dir: PathBuf::from("m"),
             tokenizer_dir: PathBuf::from("t"),
             portable: true,

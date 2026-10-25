@@ -3,7 +3,9 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use herald_core::logging::{self, StderrLogging};
 use herald_core::model::{MessageFilter, SearchField, SearchOptions, SyncOptions};
+use herald_core::paths::PathLayout;
 use herald_core::pop3::Pop3Options;
 use herald_core::{Herald, HeraldError};
 use rust_mcp_sdk::macros::{mcp_tool, JsonSchema};
@@ -444,7 +446,6 @@ fn success_result(value: serde_json::Value) -> CallToolResult {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    init_tracing();
     let config = match config_path() {
         Ok(config) => config,
         Err(message) => {
@@ -452,6 +453,7 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let _logging = init_logging(config.as_deref());
     let herald = match Herald::open(config.as_deref()) {
         Ok(herald) => herald,
         Err(err) => {
@@ -538,17 +540,11 @@ fn config_path() -> std::result::Result<Option<PathBuf>, String> {
     Ok(std::env::var("HERALD_CONFIG").ok().map(PathBuf::from))
 }
 
-fn init_tracing() {
-    let filter = std::env::var("HERALD_LOG")
+fn init_logging(config: Option<&std::path::Path>) -> herald_core::logging::LoggingGuard {
+    let log_dir = PathLayout::resolve(config)
         .ok()
-        .and_then(|value| tracing_subscriber::EnvFilter::try_new(value).ok())
-        .or_else(|| tracing_subscriber::EnvFilter::try_from_default_env().ok())
-        .unwrap_or_else(|| tracing_subscriber::EnvFilter::new("warn"));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .with_target(false)
-        .try_init();
+        .map(|layout| layout.log_dir());
+    logging::init(log_dir.as_deref(), StderrLogging::Warn)
 }
 
 #[cfg(test)]

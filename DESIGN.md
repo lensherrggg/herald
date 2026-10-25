@@ -86,6 +86,7 @@ PathLayout::resolve(--config?)
 
 然后：
 
+0. 入口先解析一次 `PathLayout`，在 `data_dir/logs` 安装按天滚动的文件日志（保留 14 天）；TUI 关闭 stderr 层，CLI 保留 info、MCP 保留 warn。
 1. `Config::load` 读取并校验 TOML；`demo = true` 时跳过账户校验（账户会被覆盖）。
 2. `demo` 分支：在后台线程启动 mock POP3（25 封样例邮件），把账户、`database` 改写到系统临时目录；`attachments.export_dir` 仅在未配置时改写到临时目录，已配置则保留。
 3. `PathLayout::complete` 得出 `database_path`、`models_dir`、`tokenizer_dir`：
@@ -150,6 +151,7 @@ sync(options)
 - **正文策略**：`auto_body_max_size = 0` 表示同步即缓存全部正文；正值表示只自动缓存小邮件，其余按需 RETR。
 - **附件默认不下载**：默认同步只拿附件元数据，`--with-attachments` 或读取/导出附件时才取内容。
 - **embedding 不阻塞同步**：模型缺失/向量表不可用时只提示一次，同步结果照常返回。
+- **可观测**：同步开始/结束以 info 记录 `server_messages`、`known`、`new_count` 等计数；连接/认证失败记 error，单封失败记 warn，均可从本地日志回溯。
 
 ---
 
@@ -292,7 +294,7 @@ download(options)
 
 ## 10. MCP 边界
 
-- 传输：stdio，newline-delimited JSON-RPC；stdout 只走协议，日志走 stderr。
+- 传输：stdio，newline-delimited JSON-RPC；stdout 只走协议，日志写本地 `logs/herald.YYYY-MM-DD.log`，stderr 只保留 warn 及以上。
 - 7 个工具固定注册；未知工具由 SDK 返回错误。
 - 每次调用参数先反序列化；失败返回 `INVALID_ARGUMENT`。
 - `limit` 用 `u32`（SDK 的 schema 宏不支持 `usize`），服务层再夹到 1–100。

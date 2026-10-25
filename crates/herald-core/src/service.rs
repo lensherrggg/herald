@@ -156,7 +156,18 @@ impl Herald {
             .config
             .resolve_account(options.account.as_deref())?
             .clone();
-        let outcome = sync::run(&self.config, &mut self.store, &account, &options).await?;
+        let outcome = match sync::run(&self.config, &mut self.store, &account, &options).await {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                tracing::error!(
+                    account = %account.name,
+                    host = %account.host,
+                    %error,
+                    "同步失败"
+                );
+                return Err(error);
+            }
+        };
         if options.with_embeddings {
             let jobs = if options.index {
                 let account_id = self.store.account_id(&account.name)?;
