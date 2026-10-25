@@ -8,6 +8,7 @@ use herald_tui::app::{App, Focus};
 use herald_tui::browser::Browser;
 use herald_tui::ui;
 use ratatui::backend::TestBackend;
+use ratatui::style::Color;
 use ratatui::Terminal;
 
 fn message_one() -> MockMessage {
@@ -833,4 +834,52 @@ fn text_fields_allow_moving_the_caret() {
     let browser = app.browser.as_ref().expect("browser");
     assert_eq!(browser.filename, "报告新.pdf");
     assert_eq!(browser.filename_cursor, "报告新".len());
+}
+
+#[test]
+fn leaving_raw_search_clears_highlight_residue() {
+    let (mut app, _dir) = synced_app(20, vec![message_one(), message_two()]);
+    app.color = true;
+    app.raw = Some(format!(
+        "Subject: {}\n{}",
+        "测试".repeat(10),
+        "第 01 段：中文长文本测试。\n".repeat(40)
+    ));
+    app.raw_truncated = false;
+    app.mode = herald_tui::app::Mode::Raw;
+    let mut terminal = Terminal::new(TestBackend::new(80, 30)).expect("test terminal");
+
+    app.handle_key(key(KeyCode::Char('/')));
+    for ch in "测试".chars() {
+        app.handle_key(key(KeyCode::Char(ch)));
+    }
+    terminal
+        .draw(|frame| ui::draw(frame, &app))
+        .expect("draw raw");
+    let blue = |terminal: &Terminal<TestBackend>| {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .filter(|cell| cell.bg == Color::Blue)
+            .count()
+    };
+    assert!(blue(&terminal) > 0, "the raw view should render highlights");
+
+    app.handle_key(key(KeyCode::Esc));
+    app.handle_key(key(KeyCode::Esc));
+    assert!(matches!(app.mode, herald_tui::app::Mode::Browse));
+    assert!(
+        app.full_redraw,
+        "leaving an overlay must force a full terminal repaint"
+    );
+    terminal
+        .draw(|frame| ui::draw(frame, &app))
+        .expect("draw browse");
+    assert_eq!(
+        blue(&terminal),
+        0,
+        "highlight backgrounds must not linger on the main view"
+    );
 }

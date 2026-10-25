@@ -136,6 +136,31 @@ pub enum Mode {
     Help,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModeKind {
+    Browse,
+    Input,
+    Accounts,
+    Attachments,
+    Browser,
+    Raw,
+    Help,
+}
+
+impl Mode {
+    fn kind(&self) -> ModeKind {
+        match self {
+            Mode::Browse => ModeKind::Browse,
+            Mode::Input(_) => ModeKind::Input,
+            Mode::Accounts => ModeKind::Accounts,
+            Mode::Attachments => ModeKind::Attachments,
+            Mode::Browser => ModeKind::Browser,
+            Mode::Raw => ModeKind::Raw,
+            Mode::Help => ModeKind::Help,
+        }
+    }
+}
+
 pub struct App {
     pub herald: Herald,
     pub runtime: Runtime,
@@ -171,6 +196,8 @@ pub struct App {
     pub attachments: Option<AttachmentPicker>,
     pub account_pick: usize,
     pub quit: bool,
+    /// Set when leaving an overlay so the next frame repaints the whole screen.
+    pub full_redraw: bool,
     pub color: bool,
 }
 
@@ -212,6 +239,7 @@ impl App {
             attachments: None,
             account_pick: 0,
             quit: false,
+            full_redraw: false,
             color,
         };
         if app.account.is_none() {
@@ -229,6 +257,10 @@ impl App {
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         while !self.quit {
+            if self.full_redraw {
+                terminal.clear()?;
+                self.full_redraw = false;
+            }
             terminal.draw(|frame| ui::draw(frame, self))?;
             match event::read()? {
                 Event::Key(key)
@@ -695,6 +727,7 @@ impl App {
             self.quit = true;
             return;
         }
+        let was_overlay = self.mode.kind() != ModeKind::Browse;
         match self.mode {
             Mode::Browse => self.handle_browse_key(key),
             Mode::Input(_) => self.handle_input_key(key),
@@ -710,6 +743,9 @@ impl App {
                     self.mode = Mode::Browse;
                 }
             }
+        }
+        if was_overlay && matches!(self.mode, Mode::Browse) {
+            self.full_redraw = true;
         }
     }
 
