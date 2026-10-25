@@ -3,7 +3,7 @@ use std::path::Path;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use herald_core::model::{
     AccountSummary, AttachmentMeta, MessageDetail, MessageFilter, MessageSort, MessageSummary,
-    SearchKind, SearchResult, SyncOptions, SyncStatus,
+    SearchField, SearchKind, SearchOptions, SearchResult, SyncOptions, SyncStatus,
 };
 use herald_core::paths::ResolvedPaths;
 use herald_core::{Config, Herald};
@@ -13,7 +13,6 @@ use tokio::runtime::Runtime;
 use crate::browser::{sanitize_filename, Browser};
 use crate::ui;
 
-pub const PAGE_SIZE: usize = 20;
 pub const RAW_VIEW_LIMIT: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +26,7 @@ pub struct InputState {
     pub kind: InputKind,
     pub value: String,
     pub search_kind: Option<SearchKind>,
+    pub search_field: Option<SearchField>,
 }
 
 impl InputState {
@@ -38,6 +38,10 @@ impl InputState {
             (InputKind::Search, None) => "搜索",
             (InputKind::NewDir, _) => "新建目录",
         }
+    }
+
+    pub fn field_label(&self) -> Option<&'static str> {
+        self.search_field.map(SearchField::label)
     }
 }
 
@@ -51,6 +55,7 @@ pub enum Focus {
 pub struct SearchState {
     pub query: String,
     pub kind: SearchKind,
+    pub field: SearchField,
 }
 
 impl SearchState {
@@ -111,6 +116,8 @@ pub struct App {
     pub sync_status: Option<SyncStatus>,
     pub messages: Vec<MessageSummary>,
     pub total: usize,
+    pub unread_total: usize,
+    pub page_size: usize,
     pub page: usize,
     pub selected: usize,
     pub sort: MessageSort,
@@ -137,6 +144,7 @@ impl App {
         let accounts = herald.accounts().unwrap_or_default();
         let account = pick_account(&herald.config, &accounts, requested_account);
         let color = color_enabled();
+        let page_size = herald.config.ui.page_size.max(1);
         let mut app = Self {
             herald,
             runtime,
@@ -145,6 +153,8 @@ impl App {
             sync_status: None,
             messages: Vec::new(),
             total: 0,
+            unread_total: 0,
+            page_size,
             page: 0,
             selected: 0,
             sort: MessageSort::Date,
@@ -194,7 +204,7 @@ impl App {
     }
 
     pub fn page_count(&self) -> usize {
-        page_count_for(self.total)
+        page_count_for(self.total, self.page_size)
     }
 
     pub fn current_message(&self) -> Option<&MessageSummary> {
@@ -209,19 +219,23 @@ impl App {
             return;
         };
         self.sync_status = self.herald.status(Some(&account)).ok();
+        self.unread_total = self.herald.unread_count(Some(&account)).unwrap_or(0);
         let result = if let Some(search) = self.search.clone() {
             self.herald.search(
                 Some(&account),
                 &search.query,
                 search.kind,
-                PAGE_SIZE,
-                self.page * PAGE_SIZE,
+                &SearchOptions {
+                    field: search.field,
+                    limit: self.page_size,
+                    offset: self.page * self.page_size,
+                },
             )
         } else {
             let filter = MessageFilter {
                 account: Some(account.clone()),
-                limit: PAGE_SIZE,
-                offset: self.page * PAGE_SIZE,
+                limit: self.page_size,
+                offset: self.page * self.page_size,
                 sort: self.sort,
                 descending: self.descending,
                 ..Default::default()
@@ -303,15 +317,63 @@ impl App {
             .block_on(self.herald.get_message(account.as_deref(), &uidl, true))
         {
             Ok(detail) => {
-                self.status = StatusMessage::info(format!(
-                    "已加载：{}",
-                    detail.header.subject.as_deref().unwrap_or("(无主题)")
-                ));
+                let title = detail
+                    .header
+                    .subject
+                    .clone()
+                    .unwrap_or_else(|| "(无主题)".to_string());
                 self.detail = Some(detail);
                 self.detail_scroll = 0;
+                // Explicit open marks the message read; previewing does not.
+                if self.apply_read_state(&uidl, true, false) {
+                    self.status = StatusMessage::info(format!("已加载：{title}"));
+                }
             }
             Err(err) => {
                 self.status = StatusMessage::error(format!("加载邮件失败：{err}"));
+            }
+        }
+    }
+
+    pub fn toggle_read(&mut self) {
+        let Some(message) = self.current_message() else {
+            self.status = StatusMessage::error("没有选中的邮件");
+            return;
+        };
+        let read = !message.is_read;
+        let uidl = message.uidl.clone();
+        self.apply_read_state(&uidl, read, true);
+    }
+
+    fn apply_read_state(&mut self, uidl: &str, read: bool, announce: bool) -> bool {
+        let account = self.account.clone();
+        match self.herald.set_read(account.as_deref(), uidl, read) {
+            Ok(()) => {
+                for message in &mut self.messages {
+                    if message.uidl == uidl {
+                        message.is_read = read;
+                    }
+                }
+                if let Some(detail) = &mut self.detail {
+                    if detail.header.uidl == uidl {
+                        detail.is_read = read;
+                    }
+                }
+                self.unread_total = self
+                    .herald
+                    .unread_count(account.as_deref())
+                    .unwrap_or(self.unread_total);
+                if announce {
+                    self.status = StatusMessage::info(format!(
+                        "已标记为{}",
+                        if read { "已读" } else { "未读" }
+                    ));
+                }
+                true
+            }
+            Err(err) => {
+                self.status = StatusMessage::error(format!("更新已读状态失败：{err}"));
+                false
             }
         }
     }
@@ -432,6 +494,10 @@ impl App {
     }
 
     pub fn run_search(&mut self, kind: SearchKind, query: String) {
+        self.run_search_with(kind, SearchField::All, query);
+    }
+
+    pub fn run_search_with(&mut self, kind: SearchKind, field: SearchField, query: String) {
         let query = query.trim().to_string();
         if query.is_empty() {
             self.search = None;
@@ -440,13 +506,20 @@ impl App {
             self.reload();
             return;
         }
+        // Embeddings cover the whole message, so field-scoped search is
+        // keyword-only.
+        let kind = if field != SearchField::All {
+            SearchKind::Keyword
+        } else {
+            kind
+        };
         if kind == SearchKind::Semantic && !self.herald.semantic_enabled() {
             self.status = StatusMessage::error(
                 "语义检索未启用：请在配置中开启 semantic.enabled，或运行 herald models download",
             );
             return;
         }
-        self.search = Some(SearchState { query, kind });
+        self.search = Some(SearchState { query, kind, field });
         self.page = 0;
         self.selected = 0;
         self.detail = None;
@@ -456,8 +529,9 @@ impl App {
         } else {
             self.status = StatusMessage::info(match self.search.as_ref() {
                 Some(search) => format!(
-                    "{}搜索“{}”：{} 条",
+                    "{}搜索（{}）“{}”：{} 条",
                     search.label(),
+                    search.field.label(),
                     search.query,
                     self.total
                 ),
@@ -647,11 +721,12 @@ impl App {
             KeyCode::Char('s') => self.sync(false),
             KeyCode::Char('S') => self.sync(true),
             KeyCode::Char('/') => {
-                let kind = self.herald.default_search_kind();
+                let kind = self.herald.default_search_kind(SearchField::All);
                 self.mode = Mode::Input(InputState {
                     kind: InputKind::Search,
                     value: String::new(),
                     search_kind: Some(kind),
+                    search_field: Some(SearchField::All),
                 })
             }
             KeyCode::Char('o') => self.cycle_sort(),
@@ -685,6 +760,7 @@ impl App {
             KeyCode::Tab => self.toggle_focus(),
             KeyCode::Char('r') => self.load_raw(),
             KeyCode::Char('e') => self.start_export(),
+            KeyCode::Char('u') => self.toggle_read(),
             KeyCode::Esc => {
                 if self.search.is_some() {
                     self.clear_search();
@@ -717,11 +793,14 @@ impl App {
                 };
                 match kind {
                     InputKind::Search => {
-                        let kind = match &self.mode {
-                            Mode::Input(state) => state.search_kind.unwrap_or(SearchKind::Keyword),
-                            _ => SearchKind::Keyword,
+                        let (kind, field) = match &self.mode {
+                            Mode::Input(state) => (
+                                state.search_kind.unwrap_or(SearchKind::Keyword),
+                                state.search_field.unwrap_or(SearchField::All),
+                            ),
+                            _ => (SearchKind::Keyword, SearchField::All),
                         };
-                        self.run_search(kind, value);
+                        self.run_search_with(kind, field, value);
                     }
                     InputKind::NewDir => self.submit_new_dir(value),
                 }
@@ -730,6 +809,17 @@ impl App {
                 if let Mode::Input(state) = &mut self.mode {
                     if let Some(kind) = state.search_kind {
                         state.search_kind = Some(next_search_kind(kind));
+                    }
+                }
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Mode::Input(state) = &mut self.mode {
+                    if let Some(field) = state.search_field {
+                        let field = field.next();
+                        state.search_field = Some(field);
+                        if field != SearchField::All {
+                            state.search_kind = Some(SearchKind::Keyword);
+                        }
                     }
                 }
             }
@@ -851,6 +941,7 @@ impl App {
                     kind: InputKind::NewDir,
                     value: String::new(),
                     search_kind: None,
+                    search_field: None,
                 })
             }
             _ => {}
@@ -1037,11 +1128,11 @@ fn prepare_raw(bytes: &[u8], limit: usize) -> (String, bool) {
     (output, truncated)
 }
 
-fn page_count_for(total: usize) -> usize {
+fn page_count_for(total: usize, page_size: usize) -> usize {
     if total == 0 {
         1
     } else {
-        total.div_ceil(PAGE_SIZE)
+        total.div_ceil(page_size.max(1))
     }
 }
 
@@ -1063,9 +1154,10 @@ mod tests {
 
     #[test]
     fn pages_cover_remainders() {
-        assert_eq!(page_count_for(41), 3);
-        assert_eq!(page_count_for(40), 2);
-        assert_eq!(page_count_for(0), 1);
+        assert_eq!(page_count_for(41, 20), 3);
+        assert_eq!(page_count_for(40, 20), 2);
+        assert_eq!(page_count_for(0, 20), 1);
+        assert_eq!(page_count_for(5, 3), 2);
     }
 
     #[test]
@@ -1085,6 +1177,7 @@ mod tests {
             body_html: None,
             body_cached: false,
             attachments: vec![],
+            is_read: false,
         };
         assert!(body_text(&detail).contains("按 Enter"));
     }

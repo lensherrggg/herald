@@ -8,8 +8,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+#[cfg(feature = "test-support")]
 use rustls::ServerConfig;
-use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use rustls_pki_types::CertificateDer;
+#[cfg(feature = "test-support")]
+use rustls_pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
@@ -53,6 +56,49 @@ impl Default for MockConfig {
     }
 }
 
+#[cfg(feature = "test-support")]
+fn tls_material(
+    mode: Security,
+) -> io::Result<(Option<CertificateDer<'static>>, Option<TlsAcceptor>)> {
+    match mode {
+        Security::Plain => Ok((None, None)),
+        Security::Stls | Security::Tls => {
+            let certified = rcgen::generate_simple_self_signed(vec![
+                "localhost".to_string(),
+                "127.0.0.1".to_string(),
+            ])
+            .map_err(io::Error::other)?;
+            let cert_der = certified.cert.der().clone();
+            let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+                certified.signing_key.serialize_der(),
+            ));
+            let server_config = ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(vec![cert_der.clone()], key)
+                .map_err(io::Error::other)?;
+            Ok((
+                Some(cert_der),
+                Some(TlsAcceptor::from(Arc::new(server_config))),
+            ))
+        }
+    }
+}
+
+/// Demo builds only ship the plain mode; TLS is test-only to keep self-signed
+/// certificate generation out of release binaries.
+#[cfg(not(feature = "test-support"))]
+fn tls_material(
+    mode: Security,
+) -> io::Result<(Option<CertificateDer<'static>>, Option<TlsAcceptor>)> {
+    match mode {
+        Security::Plain => Ok((None, None)),
+        _ => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "此构建的 mock 服务器仅支持 plain（TLS 需 feature = test-support）",
+        )),
+    }
+}
+
 pub struct MockPop3Server {
     addr: SocketAddr,
     cert_der: Option<CertificateDer<'static>>,
@@ -65,28 +111,7 @@ impl MockPop3Server {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
 
-        let (cert_der, acceptor) = match config.mode {
-            Security::Plain => (None, None),
-            Security::Stls | Security::Tls => {
-                let certified = rcgen::generate_simple_self_signed(vec![
-                    "localhost".to_string(),
-                    "127.0.0.1".to_string(),
-                ])
-                .map_err(io::Error::other)?;
-                let cert_der = certified.cert.der().clone();
-                let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-                    certified.signing_key.serialize_der(),
-                ));
-                let server_config = ServerConfig::builder()
-                    .with_no_client_auth()
-                    .with_single_cert(vec![cert_der.clone()], key)
-                    .map_err(io::Error::other)?;
-                (
-                    Some(cert_der),
-                    Some(TlsAcceptor::from(Arc::new(server_config))),
-                )
-            }
-        };
+        let (cert_der, acceptor) = tls_material(config.mode)?;
 
         let shared = Arc::new(config);
         let acceptor = acceptor.map(Arc::new);

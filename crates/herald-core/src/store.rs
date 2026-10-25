@@ -10,7 +10,7 @@ use crate::config::AccountConfig;
 use crate::error::{HeraldError, Result};
 use crate::model::{
     AccountSummary, AttachmentData, AttachmentMeta, MessageDetail, MessageFilter, MessageHeader,
-    MessageSummary, SearchResult, SyncErrorRecord, SyncStatus,
+    MessageSummary, SearchField, SearchResult, SyncErrorRecord, SyncStatus,
 };
 use crate::search;
 
@@ -101,6 +101,7 @@ impl Store {
                 body_text      TEXT,
                 body_html      TEXT,
                 body_cached_at TEXT,
+                is_read        INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(account_id, uidl)
             );
             CREATE INDEX IF NOT EXISTS idx_messages_account_date
@@ -136,6 +137,7 @@ impl Store {
             );
             "#,
         )?;
+        self.ensure_read_column()?;
 
         let count: i64 = self
             .conn
@@ -442,7 +444,8 @@ impl Store {
             .query_row(
                 r#"
                 SELECT id, message_id, from_addr, to_addr, cc_addr, subject, date,
-                       COALESCE(size, 0), body_text, body_html, body_cached_at IS NOT NULL
+                       COALESCE(size, 0), body_text, body_html,
+                       body_cached_at IS NOT NULL, COALESCE(is_read, 0)
                 FROM messages WHERE account_id = ?1 AND uidl = ?2
                 "#,
                 params![account_id, uidl],
@@ -462,6 +465,7 @@ impl Store {
                         row.get::<_, Option<String>>(8)?,
                         row.get::<_, Option<String>>(9)?,
                         row.get::<_, i64>(10)? != 0,
+                        row.get::<_, i64>(11)? != 0,
                     ))
                 },
             )
@@ -474,6 +478,7 @@ impl Store {
             body_html: row.3,
             body_cached: row.4,
             attachments,
+            is_read: row.5,
         })
     }
 
@@ -489,6 +494,40 @@ impl Store {
         cached
             .map(|value| value != 0)
             .ok_or_else(|| HeraldError::not_found(format!("邮件不存在：{uidl}")))
+    }
+
+    pub fn set_read(&self, account_id: i64, uidl: &str, read: bool) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE messages SET is_read = ?1 WHERE account_id = ?2 AND uidl = ?3",
+            params![read as i64, account_id, uidl],
+        )?;
+        if changed == 0 {
+            return Err(HeraldError::not_found(format!("邮件不存在：{uidl}")));
+        }
+        Ok(())
+    }
+
+    pub fn unread_count(&self, account_id: i64) -> Result<usize> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE account_id = ?1 AND is_read = 0",
+            params![account_id],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
+    fn ensure_read_column(&self) -> Result<()> {
+        let present: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'is_read'",
+            [],
+            |row| row.get(0),
+        )?;
+        if present == 0 {
+            self.conn.execute_batch(
+                "ALTER TABLE messages ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+        Ok(())
     }
 
     pub fn list_messages(
@@ -510,6 +549,9 @@ impl Store {
             conditions.push("datetime(m.date) <= datetime(?)".to_string());
             values.push(Box::new(until.clone()));
         }
+        if filter.unread_only {
+            conditions.push("m.is_read = 0".to_string());
+        }
         let where_clause = conditions.join(" AND ");
 
         let total: i64 = self.conn.query_row(
@@ -528,7 +570,8 @@ impl Store {
         let direction = if filter.descending { "DESC" } else { "ASC" };
         let sql = format!(
             r#"
-            SELECT m.uidl, m.subject, m.from_addr, m.date, COALESCE(m.size, 0)
+            SELECT m.uidl, m.subject, m.from_addr, m.date, COALESCE(m.size, 0),
+                   COALESCE(m.is_read, 0)
             FROM messages m
             WHERE {where_clause}
             ORDER BY {order} {direction}, m.id DESC
@@ -545,6 +588,7 @@ impl Store {
                     from: row.get(2)?,
                     date: row.get(3)?,
                     size: row.get::<_, i64>(4)? as u64,
+                    is_read: row.get::<_, i64>(5)? != 0,
                 })
             },
         )?;
@@ -558,6 +602,22 @@ impl Store {
         limit: usize,
         offset: usize,
     ) -> Result<SearchResult> {
+        self.keyword_search_with(account_id, query, SearchField::All, limit, offset)
+    }
+
+    pub fn keyword_search_with(
+        &self,
+        account_id: i64,
+        query: &str,
+        field: SearchField,
+        limit: usize,
+        offset: usize,
+    ) -> Result<SearchResult> {
+        // Field scope is a substring filter, not an FTS column query; the
+        // single-column index would otherwise match other fields too.
+        if field != SearchField::All {
+            return self.keyword_search_like(account_id, query, field, limit, offset);
+        }
         let fts_query = search::fts_query(query);
         if !fts_query.is_empty() {
             match self.keyword_search_fts(account_id, &fts_query, limit, offset) {
@@ -566,7 +626,7 @@ impl Store {
                 Err(err) => tracing::warn!(%err, "FTS 查询失败，回退 LIKE"),
             }
         }
-        self.keyword_search_like(account_id, query, limit, offset)
+        self.keyword_search_like(account_id, query, field, limit, offset)
     }
 
     fn keyword_search_fts(
@@ -587,7 +647,8 @@ impl Store {
         )?;
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT m.uidl, m.subject, m.from_addr, m.date, COALESCE(m.size, 0)
+            SELECT m.uidl, m.subject, m.from_addr, m.date, COALESCE(m.size, 0),
+                   COALESCE(m.is_read, 0)
             FROM messages_fts
             JOIN messages m ON m.id = messages_fts.rowid
             WHERE messages_fts MATCH ?1 AND m.account_id = ?2
@@ -604,6 +665,7 @@ impl Store {
                     from: row.get(2)?,
                     date: row.get(3)?,
                     size: row.get::<_, i64>(4)? as u64,
+                    is_read: row.get::<_, i64>(5)? != 0,
                 })
             },
         )?;
@@ -618,31 +680,36 @@ impl Store {
         &self,
         account_id: i64,
         query: &str,
+        field: SearchField,
         limit: usize,
         offset: usize,
     ) -> Result<SearchResult> {
         let pattern = search::like_pattern(query);
+        let clause = match field {
+            SearchField::All => {
+                "(subject LIKE ?2 ESCAPE '\\' OR from_addr LIKE ?2 ESCAPE '\\' \
+                 OR body_text LIKE ?2 ESCAPE '\\')"
+            }
+            SearchField::From => "from_addr LIKE ?2 ESCAPE '\\'",
+            SearchField::To => "(to_addr LIKE ?2 ESCAPE '\\' OR cc_addr LIKE ?2 ESCAPE '\\')",
+            SearchField::Subject => "subject LIKE ?2 ESCAPE '\\'",
+            SearchField::Body => "body_text LIKE ?2 ESCAPE '\\'",
+        };
         let total: i64 = self.conn.query_row(
-            r#"
-            SELECT COUNT(*) FROM messages
-            WHERE account_id = ?1
-              AND (subject LIKE ?2 ESCAPE '\' OR from_addr LIKE ?2 ESCAPE '\'
-                   OR body_text LIKE ?2 ESCAPE '\')
-            "#,
+            &format!("SELECT COUNT(*) FROM messages WHERE account_id = ?1 AND {clause}"),
             params![account_id, pattern],
             |row| row.get(0),
         )?;
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
             r#"
-            SELECT uidl, subject, from_addr, date, COALESCE(size, 0)
+            SELECT uidl, subject, from_addr, date, COALESCE(size, 0),
+                   COALESCE(is_read, 0)
             FROM messages
-            WHERE account_id = ?1
-              AND (subject LIKE ?2 ESCAPE '\' OR from_addr LIKE ?2 ESCAPE '\'
-                   OR body_text LIKE ?2 ESCAPE '\')
+            WHERE account_id = ?1 AND {clause}
             ORDER BY COALESCE(datetime(date), '') DESC, id DESC
             LIMIT ?3 OFFSET ?4
-            "#,
-        )?;
+            "#
+        ))?;
         let rows = stmt.query_map(
             params![account_id, pattern, limit as i64, offset as i64],
             |row| {
@@ -652,6 +719,7 @@ impl Store {
                     from: row.get(2)?,
                     date: row.get(3)?,
                     size: row.get::<_, i64>(4)? as u64,
+                    is_read: row.get::<_, i64>(5)? != 0,
                 })
             },
         )?;
@@ -854,7 +922,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             r#"
             SELECT m.uidl, m.subject, m.from_addr, m.date, COALESCE(m.size, 0),
-                   x.distance
+                   COALESCE(m.is_read, 0), x.distance
             FROM (
                 SELECT message_id, distance FROM message_embeddings
                 WHERE embedding MATCH ?1 AND k = ?2
@@ -872,6 +940,7 @@ impl Store {
                 from: row.get(2)?,
                 date: row.get(3)?,
                 size: row.get::<_, i64>(4)? as u64,
+                is_read: row.get::<_, i64>(5)? != 0,
             })
         })?;
         let messages = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -935,4 +1004,43 @@ fn register_sqlite_vec() {
             sqlite_vec::sqlite3_vec_init as *const (),
         )));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn message_columns(path: &Path) -> i64 {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'is_read'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn legacy_database_gains_is_read_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+        {
+            let store = Store::open(&path).unwrap();
+            store
+                .conn
+                .execute_batch("ALTER TABLE messages DROP COLUMN is_read;")
+                .unwrap();
+        }
+        assert_eq!(message_columns(&path), 0);
+
+        {
+            let _store = Store::open(&path).unwrap();
+            assert_eq!(message_columns(&path), 1);
+        }
+
+        // Re-opening an already migrated database is a no-op.
+        let _store = Store::open(&path).unwrap();
+        assert_eq!(message_columns(&path), 1);
+    }
 }

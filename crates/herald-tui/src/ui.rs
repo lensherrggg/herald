@@ -11,7 +11,7 @@ use crate::app::{
     Mode,
 };
 use crate::browser::Browser;
-use herald_core::model::SearchKind;
+use herald_core::model::{SearchField, SearchKind};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
@@ -84,19 +84,20 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
     let sort_arrow = if app.descending { "↓" } else { "↑" };
     let title = match &app.search {
         Some(search) => format!(
-            "{} {}搜索：{} · {} 条 · {}{} ",
+            "{} {}搜索（{}）：{} · {} 条 · {} ",
             focus_marker(focused),
             search.label(),
+            search.field.label(),
             search.query,
             app.total,
-            app.sort.label(),
-            sort_arrow
+            app.page + 1
         ),
         None => format!(
-            "{} 邮件 · {}{} · 第 {}/{} 页 ",
+            "{} 邮件 · {}{} · 未读 {} · 第 {}/{} 页 ",
             focus_marker(focused),
             app.sort.label(),
             sort_arrow,
+            app.unread_total,
             app.page + 1,
             app.page_count()
         ),
@@ -119,6 +120,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
     }
     let rows = app.messages.iter().map(|message| {
         Row::new(vec![
+            Cell::from(if message.is_read { " " } else { "●" }),
             Cell::from(shorten_date(message.date.as_deref())),
             Cell::from(sender_short(message.from.as_deref())),
             Cell::from(
@@ -130,11 +132,12 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
             ),
         ])
     });
-    let header = Row::new(vec!["日期", "发件人", "主题"])
+    let header = Row::new(vec!["", "日期", "发件人", "主题"])
         .style(Style::new().add_modifier(Modifier::BOLD | Modifier::UNDERLINED));
     let table = Table::new(
         rows,
         [
+            Constraint::Length(1),
             Constraint::Length(11),
             Constraint::Length(18),
             Constraint::Min(8),
@@ -172,6 +175,14 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
         labelled("时间", detail.header.date.as_deref().unwrap_or("-")),
         labelled("大小", &format_size(detail.header.size)),
         labelled("UIDL", &detail.header.uidl),
+        labelled(
+            "状态",
+            if detail.is_read {
+                "已读（本地）"
+            } else {
+                "未读（本地）"
+            },
+        ),
     ];
     if detail.attachments.is_empty() {
         lines.push(labelled("附件", "无"));
@@ -214,19 +225,19 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         let hints = match &app.mode {
             Mode::Browse if app.focus == Focus::Detail => {
                 if area.width < 70 {
-                    "↑↓ 滚动 · Tab 列表 · r 原文 · h 帮助"
+                    "↑↓ 滚动 · u 已读 · Tab 列表 · h 帮助"
                 } else {
-                    "↑↓ 滚动 · Tab 列表 · r 原文 · e 导出 · h 帮助"
+                    "↑↓ 滚动 · Tab 列表 · u 已读 · r 原文 · e 导出 · h 帮助"
                 }
             }
             Mode::Browse => {
                 if area.width < 70 {
-                    "s 同步 · / 搜索 · Enter 详情 · h 帮助"
+                    "s 同步 · / 搜索 · o 排序 · u 已读 · Enter 详情"
                 } else {
-                    "s 同步 · / 搜索 · Enter 详情 · r 原文 · e 导出 · h 帮助"
+                    "s 同步 · / 搜索 · o 排序 · O 升降 · u 已读 · Enter 详情 · r 原文 · e 导出 · h 帮助"
                 }
             }
-            Mode::Input(_) => "Enter 确认 · Tab 切换模式 · Esc 取消",
+            Mode::Input(_) => "Enter 确认 · Tab 模式 · Ctrl+F 字段 · Esc 取消",
             Mode::Accounts => "↑↓ 选择 · Enter 切换 · Esc 取消",
             Mode::Attachments => "↑↓ 选择附件 · Enter 导出 · Esc 取消",
             Mode::Browser => "↑↓ 选择 · Enter 进入 · d 保存 · f 改名 · n 新建 · Esc 取消",
@@ -255,15 +266,19 @@ fn draw_input(frame: &mut Frame, app: &App, state: &crate::app::InputState) {
     }
     frame.render_widget(Clear, area);
     let hint = match state.kind {
-        crate::app::InputKind::Search => "Enter 确认 · Tab 切换关键词/混合/语义 · Esc 取消",
+        crate::app::InputKind::Search => "Enter 确认 · Tab 模式 · Ctrl+F 字段 · Esc 取消",
         crate::app::InputKind::NewDir => "Enter 确认 · Esc 取消",
+    };
+    let title = match state.field_label() {
+        Some(field) => format!(" {} · {} ", state.label(), field),
+        None => format!(" {} ", state.label()),
     };
     let text = Text::from(vec![
         Line::from(Span::styled(format!("{}█", state.value), accent(app))),
         Line::from(Span::styled(hint, Style::new().add_modifier(Modifier::DIM))),
     ]);
     let paragraph = Paragraph::new(text)
-        .block(panel(format!(" {} ", state.label()), true, app))
+        .block(panel(title, true, app))
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 }
@@ -456,12 +471,13 @@ fn draw_help(frame: &mut Frame, app: &App) {
         )),
         Line::from(""),
         Line::from("s / S        增量同步 / 同步全部新邮件"),
-        Line::from("/            搜索（Tab 切换关键词/混合/语义）"),
+        Line::from("/            搜索（Tab 模式 · Ctrl+F 字段）"),
         Line::from("a            切换账户"),
-        Line::from("o / O        切换排序字段 / 反向排序"),
+        Line::from("o / O        切换排序字段 / 反转升降序"),
         Line::from("[ ] PgUp/PgDn 翻页"),
         Line::from("↑ ↓ j k      移动选择（详情聚焦时滚动正文）"),
-        Line::from("Enter        加载邮件详情"),
+        Line::from("Enter        加载邮件详情（并标记已读）"),
+        Line::from("u            标记已读 / 未读（仅本地）"),
         Line::from("Tab          切换列表/详情焦点"),
         Line::from("r            查看原始邮件"),
         Line::from("e            导出附件（内置文件浏览器）"),
@@ -489,7 +505,7 @@ fn draw_help(frame: &mut Frame, app: &App) {
         } else {
             "缺失（herald models download）"
         },
-        match app.herald.default_search_kind() {
+        match app.herald.default_search_kind(SearchField::All) {
             SearchKind::Hybrid => "混合",
             _ => "关键词",
         }

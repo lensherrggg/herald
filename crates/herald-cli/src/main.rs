@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use anyhow::{bail, Context};
 use clap::{Parser, Subcommand};
-use herald_core::model::{MessageFilter, SearchKind, SyncOptions};
+use herald_core::model::{MessageFilter, SearchField, SearchKind, SearchOptions, SyncOptions};
 use herald_core::paths::PathLayout;
 use herald_core::{Config, Herald};
 use tracing_subscriber::EnvFilter;
@@ -35,6 +35,27 @@ enum SearchMode {
     Keyword,
     Semantic,
     Hybrid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum FieldArg {
+    All,
+    From,
+    To,
+    Subject,
+    Body,
+}
+
+impl From<FieldArg> for SearchField {
+    fn from(value: FieldArg) -> Self {
+        match value {
+            FieldArg::All => SearchField::All,
+            FieldArg::From => SearchField::From,
+            FieldArg::To => SearchField::To,
+            FieldArg::Subject => SearchField::Subject,
+            FieldArg::Body => SearchField::Body,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -77,6 +98,9 @@ enum Command {
     List {
         #[arg(long)]
         account: Option<String>,
+        /// 只列出未读邮件
+        #[arg(long)]
+        unread: bool,
         #[arg(long, default_value_t = 20)]
         limit: usize,
         #[arg(long, default_value_t = 0)]
@@ -90,6 +114,9 @@ enum Command {
         /// 检索模式；auto 在模型可用时使用混合检索
         #[arg(long, value_enum)]
         mode: Option<SearchMode>,
+        /// 限定匹配字段（默认 all）
+        #[arg(long, value_enum, default_value = "all")]
+        field: FieldArg,
         /// 等价于 --mode semantic（保留旧写法）
         #[arg(long, conflicts_with = "mode")]
         semantic: bool,
@@ -97,6 +124,14 @@ enum Command {
         limit: usize,
         #[arg(long, default_value_t = 0)]
         offset: usize,
+    },
+    /// 标记邮件为已读（--unread 则标记为未读，仅影响本地状态）
+    Mark {
+        uidl: String,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long)]
+        unread: bool,
     },
     /// 查看邮件详情
     Show {
@@ -241,6 +276,7 @@ async fn run(config: Option<PathBuf>, json: bool, command: Command) -> anyhow::R
         }
         Command::List {
             account,
+            unread,
             limit,
             offset,
         } => {
@@ -248,6 +284,7 @@ async fn run(config: Option<PathBuf>, json: bool, command: Command) -> anyhow::R
                 account: account.clone(),
                 limit,
                 offset,
+                unread_only: unread,
                 ..Default::default()
             }
             .normalized();
@@ -263,17 +300,28 @@ async fn run(config: Option<PathBuf>, json: bool, command: Command) -> anyhow::R
             query,
             account,
             mode,
+            field,
             semantic,
             limit,
             offset,
         } => {
+            let field = SearchField::from(field);
             let kind = match (semantic, mode) {
                 (true, _) | (false, Some(SearchMode::Semantic)) => SearchKind::Semantic,
                 (false, Some(SearchMode::Keyword)) => SearchKind::Keyword,
                 (false, Some(SearchMode::Hybrid)) => SearchKind::Hybrid,
-                (false, None | Some(SearchMode::Auto)) => herald.default_search_kind(),
+                (false, None | Some(SearchMode::Auto)) => herald.default_search_kind(field),
             };
-            let result = herald.search(account.as_deref(), &query, kind, limit, offset)?;
+            let result = herald.search(
+                account.as_deref(),
+                &query,
+                kind,
+                &SearchOptions {
+                    field,
+                    limit,
+                    offset,
+                },
+            )?;
             if let Some(note) = &result.note {
                 eprintln!("提示：{note}");
             }
@@ -281,6 +329,20 @@ async fn run(config: Option<PathBuf>, json: bool, command: Command) -> anyhow::R
                 print_json(&result)?;
             } else {
                 print_messages(result.total, &result.messages);
+            }
+            Ok(())
+        }
+        Command::Mark {
+            uidl,
+            account,
+            unread,
+        } => {
+            let read = !unread;
+            herald.set_read(account.as_deref(), &uidl, read)?;
+            if json {
+                print_json(&serde_json::json!({ "uidl": uidl, "is_read": read }))?;
+            } else {
+                println!("{uidl} 已标记为{}", if read { "已读" } else { "未读" });
             }
             Ok(())
         }
@@ -431,6 +493,8 @@ async fn show(
     }
 
     let detail = herald.get_message(account, uidl, true).await?;
+    // Opening a message marks it read locally; `herald mark --unread` reverts.
+    let is_read = herald.set_read(account, uidl, true).is_ok();
     let body_text = detail.body_text.as_deref().unwrap_or("");
     let (preview, truncated) = if full_body || json {
         (body_text, false)
@@ -452,6 +516,7 @@ async fn show(
             "body_truncated": truncated,
             "body_cached": detail.body_cached,
             "attachments": detail.attachments,
+            "is_read": is_read,
         }))?;
         return Ok(());
     }
@@ -471,6 +536,7 @@ async fn show(
     }
     println!("时间：{}", detail.header.date.as_deref().unwrap_or("(无)"));
     println!("大小：{} 字节", detail.header.size);
+    println!("状态：已读（本地）");
     if !detail.attachments.is_empty() {
         println!("附件：");
         for attachment in &detail.attachments {
@@ -508,12 +574,13 @@ async fn show(
 }
 
 fn print_messages(total: usize, messages: &[herald_core::MessageSummary]) {
-    println!("共 {total} 封");
+    println!("共 {total} 封（● 未读）");
     for message in messages {
         let subject = message.subject.as_deref().unwrap_or("(无主题)");
         let subject = truncate(subject, 48).0;
         println!(
-            "{}  {}  {}  {}",
+            "{} {}  {}  {}  {}",
+            if message.is_read { " " } else { "●" },
             message.date.as_deref().unwrap_or("-"),
             message.from.as_deref().unwrap_or("-"),
             subject,

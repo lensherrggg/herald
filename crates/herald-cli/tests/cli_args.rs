@@ -19,6 +19,7 @@ fn help_exposes_tui_subcommand() {
         "sync",
         "list",
         "search",
+        "mark",
         "show",
         "status",
         "export-attachment",
@@ -43,7 +44,24 @@ fn help_exposes_tui_subcommand() {
         "semantic",
         "hybrid",
         "--semantic",
+        "--field",
+        "from",
+        "to",
+        "subject",
+        "body",
     ] {
+        assert!(text.contains(expected), "missing {expected}:\n{text}");
+    }
+
+    let list = run(&["list", "--help"]);
+    assert!(list.status.success());
+    let text = String::from_utf8_lossy(&list.stdout);
+    assert!(text.contains("--unread"), "{text}");
+
+    let mark = run(&["mark", "--help"]);
+    assert!(mark.status.success());
+    let text = String::from_utf8_lossy(&mark.stdout);
+    for expected in ["UIDL", "--account", "--unread"] {
         assert!(text.contains(expected), "missing {expected}:\n{text}");
     }
 }

@@ -7,6 +7,9 @@ pub struct MessageSummary {
     pub from: Option<String>,
     pub date: Option<String>,
     pub size: u64,
+    /// Local-only read flag; the POP3 mailbox itself is never modified.
+    #[serde(default)]
+    pub is_read: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -46,6 +49,9 @@ pub struct MessageDetail {
     pub body_html: Option<String>,
     pub body_cached: bool,
     pub attachments: Vec<AttachmentMeta>,
+    /// Local-only read flag; the POP3 mailbox itself is never modified.
+    #[serde(default)]
+    pub is_read: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -151,6 +157,8 @@ pub struct MessageFilter {
     pub until: Option<String>,
     pub sort: MessageSort,
     pub descending: bool,
+    #[serde(default)]
+    pub unread_only: bool,
 }
 
 impl Default for MessageFilter {
@@ -164,6 +172,7 @@ impl Default for MessageFilter {
             until: None,
             sort: MessageSort::Date,
             descending: true,
+            unread_only: false,
         }
     }
 }
@@ -180,6 +189,56 @@ pub enum SearchKind {
     Keyword,
     Semantic,
     Hybrid,
+}
+
+/// Which part of a message a keyword query is matched against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchField {
+    #[default]
+    All,
+    From,
+    To,
+    Subject,
+    Body,
+}
+
+impl SearchField {
+    pub fn label(self) -> &'static str {
+        match self {
+            SearchField::All => "全部字段",
+            SearchField::From => "发件人",
+            SearchField::To => "收件人",
+            SearchField::Subject => "主题",
+            SearchField::Body => "正文",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            SearchField::All => SearchField::From,
+            SearchField::From => SearchField::To,
+            SearchField::To => SearchField::Subject,
+            SearchField::Subject => SearchField::Body,
+            SearchField::Body => SearchField::All,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchOptions {
+    pub field: SearchField,
+    pub limit: usize,
+    pub offset: usize,
+}
+
+impl Default for SearchOptions {
+    fn default() -> Self {
+        Self {
+            field: SearchField::All,
+            limit: 20,
+            offset: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

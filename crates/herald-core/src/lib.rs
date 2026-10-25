@@ -4,7 +4,9 @@
 //! Entry points (CLI/TUI/MCP) are thin layers on top of [`Herald`].
 
 pub mod config;
+pub mod demo;
 pub mod error;
+pub mod mock_pop3;
 pub mod model;
 pub mod parse;
 pub mod paths;
@@ -19,9 +21,6 @@ pub mod tls;
 pub mod models;
 #[cfg(feature = "semantic")]
 pub mod semantic;
-
-#[cfg(feature = "test-support")]
-pub mod mock_pop3;
 
 pub use config::{AccountConfig, Config, Security};
 pub use error::{HeraldError, Result};

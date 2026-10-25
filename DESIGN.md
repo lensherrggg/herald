@@ -59,7 +59,8 @@ Herald 解决的是「让 Agent 稳定、受控、低 token 地读内网 POP3 �
 | `service` | `Herald` 门面：打开实例、账户选择、读路径、附件导出、模型入口 |
 | `semantic` | 从模型目录/Tokenizer 目录分别加载本地 ONNX、批量 embedding、归一化、按需写入 |
 | `models` | HF/mirror 下载、模型与 tokenizer 分目录落盘、原子写入、文件校验、目录保护 |
-| `mock_pop3` | 仅 `test-support`：plain/STLS/TLS mock server |
+| `mock_pop3` | 内置 mock POP3 server（plain；STLS/TLS 需 `test-support`） |
+| `demo` | `demo = true` 时启动内置假邮箱、临时数据库、样例邮件与首次同步，进程退出自动清理 |
 
 ### 2.2 入口层
 
@@ -84,14 +85,16 @@ PathLayout::resolve(--config?)
 
 然后：
 
-1. `Config::load` 读取并校验 TOML。
-2. `PathLayout::complete` 得出 `database_path`、`models_dir`、`tokenizer_dir`：
+1. `Config::load` 读取并校验 TOML；`demo = true` 时跳过账户校验（账户会被覆盖）。
+2. `demo` 分支：在后台线程启动 mock POP3（25 封样例邮件），把账户、`database`、附件导出目录改写到系统临时目录。
+3. `PathLayout::complete` 得出 `database_path`、`models_dir`、`tokenizer_dir`：
    - `database` 相对路径按**配置文件目录**解析；
    - `semantic.model_path` 同样相对配置文件目录，缺省为 `models/<model_name>`；
    - `semantic.tokenizer_path` 缺省复用 `models_dir`，配置后单独解析，实现目录级拆分。
-3. `Store::open` 建库/迁移。
-4. 把所有配置账户 `ensure_account` 注册进数据库（因此从未同步也能 `accounts`）。
-5. 打印实际生效路径、存放模式与降级原因。
+4. `Store::open` 建库/迁移。
+5. 把所有配置账户 `ensure_account` 注册进数据库（因此从未同步也能 `accounts`）。
+6. demo 分支在独立线程上跑首次全量同步（正文 + 附件），避免在异步调用方里嵌套 runtime；若模型文件已存在，再顺带写入 embedding。
+7. 打印实际生效路径、存放模式与降级原因。
 
 设计要点：路径决策发生在读配置之前，因此 `herald init` 也能复用；`describe()` 同时供 CLI 日志与 TUI 帮助页使用，避免入口层各自拼路径。
 
@@ -172,7 +175,7 @@ sync(options)
 
 - `accounts`：配置账户的注册表，`name` 唯一。
 - `sync_state`：每账户最后 UIDL、最后同步时间、邮件总数。
-- `messages`：头部字段 + `body_text`/`body_html` + `body_cached_at`；`UNIQUE(account_id, uidl)`。
+- `messages`：头部字段 + `body_text`/`body_html` + `body_cached_at` + 本地 `is_read`；`UNIQUE(account_id, uidl)`。
 - `attachments`：`UNIQUE(message_id, idx)`；`content BLOB` 为 NULL 表示只知元数据。
 - `sync_errors`：按账户记录单封失败与警告，供 `status` 查询。
 - `local_state`：键值表，目前保存 `last_export_dir` 等本机状态。
@@ -186,6 +189,7 @@ sync(options)
 - 附件 `idx` 是解析顺序序号，导出接口以 `(uidl, index)` 定位。
 - 向量维度固定 512；写入前校验长度并做 L2 归一化。
 - 所有 SQL 使用参数绑定；FTS 的每个查询词单独加引号。
+- `is_read` 只属于本地缓存，永远不会回写服务器；旧库打开时通过 `pragma_table_info('messages')` 检测并 `ALTER TABLE` 补列。
 
 ### 6.3 sqlite-vec 的加载方式
 
@@ -219,7 +223,21 @@ sync(options)
 3. 排序：`bm25(f)` 优先，其次日期倒序。
 4. 兜底：FTS 无结果或执行失败时使用参数化 `LIKE`，对 `%`/`_` 转义，覆盖分词未命中的中文子串。
 
-### 8.2 语义
+### 8.2 字段限定
+
+- 入口：CLI `--field all|from|to|subject|body`，MCP `field`，TUI 输入框 `Ctrl+F` 循环。
+- 实现：字段模式不走 FTS，直接对选中列做参数化 `LIKE` 子串匹配并转义 `%`/`_`；`to` 同时匹配 `to_addr` 或 `cc_addr`。
+- 这样避免为每种字段维护独立 FTS 列，也不需要 schema 迁移；代价是字段模式没有分词/BM25 排序，结果按日期倒序。
+- embedding 覆盖整封邮件，无法定位字段，因此字段模式固定为关键词；纯语义会返回 `UNSUPPORTED`，混合模式自动只走关键词并在 `note` 中说明。
+
+### 8.3 本地已读状态
+
+- 存储：`messages.is_read`，只写本地 SQLite；POP3 协议层没有已读操作。
+- 置读：CLI `show`、TUI `Enter` 打开详情成功后置读；仅预览（移动选择）不置读。
+- 切换：TUI `u`、CLI `mark [--unread]`；MCP 只读地返回 `is_read`，并支持 `unread_only` 过滤。
+- 列表展示：TUI 行首 `●` 与标题未读计数；CLI `list` 打印未读标记和总数。
+
+### 8.4 语义
 
 - 模型：`bge-small-zh-v1.5`，CLS pooling，最大长度 512，输出 512 维，手动 L2 归一化。
 - 目录：`model.onnx` 从 `semantic.model_path` 读取；`tokenizer.json` 等 4 个文件从 `semantic.tokenizer_path` 读取，缺省时两者为同一目录。
@@ -232,14 +250,14 @@ sync(options)
 - 模型缺失是预期状态：只在第一次失败时告警，不阻塞同步。
 - MCP 不编译该模块，因此 Agent 无法触发模型下载或向量检索。
 
-### 8.3 混合
+### 8.5 混合
 
 - 入口：CLI `--mode auto|keyword|semantic|hybrid`；`auto` 在 `semantic.enabled` 且模型文件齐全时选 `hybrid`，否则 `keyword`。`--semantic` 保留为 `--mode semantic` 的简写。
 - 候选：关键词与语义各取 `limit + offset` 条（RRF 只需要相对名次，分页时窗口随之扩大）。
 - 融合：`score = Σ 1/(60 + 名次)`，同一 UIDL 两路得分相加；按得分降序、日期降序打破平局。
 - 降级：语义侧失败（模型缺失、配置关闭、`vec0` 不可用）时保留关键词结果，并在 `SearchResult.note` 中说明原因；CLI 打到 stderr，TUI 显示在状态栏。
 - `total` 是融合候选数（与纯语义模式一样，受本次窗口大小限制），不是全库精确命中数。
-- TUI：`/` 打开搜索框，`Tab` 循环关键词 → 混合 → 语义；默认值同样走 `auto` 规则。
+- TUI：`/` 打开搜索框，`Tab` 循环关键词 → 混合 → 语义；`Ctrl+F` 循环字段；默认值同样走 `auto` 规则。
 
 ---
 
@@ -301,6 +319,8 @@ App
 - 同步、未缓存正文、原文、导出等阻塞操作通过 `app.runtime.block_on` 执行；UI 线程只在事件循环中重绘。
 - 切换账户/分页/排序/搜索后统一 `reload()`：重查列表、夹取页码，并对当前选择调用 `preview_selected()`。
 - `preview_selected()` 只用 `get_stored_message` 读本地 SQLite（头部、已缓存正文、附件元数据），移动选择不产生网络请求；正文未缓存时显示提示，按 `Enter` 才 RETR。
+- 搜索框 `Tab` 循环检索模式，`Ctrl+F` 循环字段；字段非 `all` 时强制关键词模式，与服务层规则一致。每页条数取自 `[ui] page_size`。
+- 列表行首 `●` 表示未读；`u` 直接切换本地已读状态并刷新未读计数。`Enter` 成功加载详情后自动置读。
 - 宽终端（≥90 列）左右分栏；窄终端一次只显示焦点面板；极小终端显示尺寸提示。
 - 底部栏按模式/焦点给出短提示，完整快捷键放在 `h` 帮助页；窄终端进一步精简。
 - `NO_COLOR` 或 `TERM=dumb` 时用粗体/反色代替颜色。
@@ -347,13 +367,14 @@ App
 - **集成测试（mock POP3）**：
   - 三种连接模式与认证；
   - 增量同步、limit、无 TOP 回退、单封失败；
-  - 中文搜索、分页、sqlite-vec 写入/查询；
+  - 中文搜索、字段限定、分页、本地已读状态、sqlite-vec 写入/查询；
   - 模型镜像下载、跳过/强制/目录保护、缺模型降级；
-  - CLI 真实二进制全流程；
+  - `demo = true` 的自动同步、临时数据库路径与退出清理；
+  - CLI 真实二进制全流程（含 demo 配置的跨进程重置）；
   - MCP 真实二进制 stdio 往返，逐个验证 7 个工具与错误码；
-  - TUI 使用 `TestBackend` 渲染真实邮件、详情、搜索、原文、附件选择、文件浏览器、新建目录、导出、窄终端与无颜色。
+  - TUI 使用 `TestBackend` 渲染真实邮件、详情、搜索、字段切换、已读切换、原文、附件选择、文件浏览器、新建目录、导出、窄终端与无颜色。
 - **CI**：Ubuntu/macOS/Windows 三平台 `fmt + clippy + test`。
-- **手工试用**：`examples/mock_pop3.rs` 可启动带中文、HTML 和附件的 mock POP3 服务，并生成 `herald.toml`，用于在无真实邮箱时走查 CLI 与 TUI。
+- **手工试用**：`demo = true` 会启动内置假邮箱与临时数据库，自动完成首次同步，退出即清空；`examples/mock_pop3.rs` 仍保留，用于固定端口/自定义样例数量的双终端流程。
 - **未自动化**：真实终端中的键盘输入、终端模拟器差异、不同字体下的中文宽度；发布前建议按 M7 做一次人工走查。
 
 ---

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use herald_core::config::{AccountConfig, Config, Security};
 use herald_core::mock_pop3::{MockConfig, MockMessage, MockPop3Server};
-use herald_core::model::{MessageFilter, SyncOptions};
+use herald_core::model::{MessageFilter, SearchOptions, SyncOptions};
 use herald_core::paths::PathLayout;
 use herald_core::pop3::{Pop3Client, Pop3Options};
 use herald_core::{Herald, SearchKind};
@@ -252,7 +252,15 @@ async fn chinese_search_and_pagination() {
     let exact = herald.keyword_search(None, "季度项目", 10, 0).unwrap();
     assert!(exact.messages.iter().any(|m| m.uidl == "u1"));
 
-    let semantic = herald.search(None, "项目", SearchKind::Semantic, 10, 0);
+    let semantic = herald.search(
+        None,
+        "项目",
+        SearchKind::Semantic,
+        &SearchOptions {
+            limit: 10,
+            ..Default::default()
+        },
+    );
     if cfg!(feature = "semantic") {
         // The model is not downloaded in tests; the error must be structured.
         assert!(semantic.is_err());

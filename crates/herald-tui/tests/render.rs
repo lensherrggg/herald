@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use herald_core::mock_pop3::{MockConfig, MockMessage, MockPop3Server};
-use herald_core::model::{SearchKind, SyncOptions};
+use herald_core::model::{SearchField, SearchKind, SyncOptions};
 use herald_core::Herald;
 use herald_tui::app::{App, Focus};
 use herald_tui::ui;
@@ -44,7 +44,8 @@ fn message_one() -> MockMessage {
 fn message_two() -> MockMessage {
     let raw = concat!(
         "From: 李四 <lisi@example.com>\r\n",
-        "To: alice@example.com\r\n",
+        "To: bob@example.com\r\n",
+        "Cc: alice@example.com\r\n",
         "Subject: 会议纪要\r\n",
         "Date: Wed, 04 Sep 2024 09:00:00 +0800\r\n",
         "Message-ID: <m2@example.com>\r\n",
@@ -57,7 +58,7 @@ fn message_two() -> MockMessage {
     MockMessage::new("m2", raw.as_bytes().to_vec())
 }
 
-fn write_config(dir: &Path, port: u16, export_dir: &Path) -> std::path::PathBuf {
+fn write_config(dir: &Path, port: u16, export_dir: &Path, page_size: usize) -> std::path::PathBuf {
     let path = dir.join("herald.toml");
     let export_dir = export_dir.to_string_lossy().replace('\\', "/");
     let text = format!(
@@ -82,6 +83,9 @@ export_dir = "{export_dir}"
 
 [semantic]
 enabled = false
+
+[ui]
+page_size = {page_size}
 "#
     );
     std::fs::write(&path, text).expect("write config");
@@ -117,6 +121,13 @@ fn input_label(app: &App) -> &'static str {
     }
 }
 
+fn input_field(app: &App) -> &'static str {
+    match &app.mode {
+        herald_tui::app::Mode::Input(state) => state.field_label().expect("field label"),
+        _ => panic!("expected search input"),
+    }
+}
+
 #[test]
 fn renders_mailbox_detail_search_browser_and_raw_views() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -132,7 +143,7 @@ fn renders_mailbox_detail_search_browser_and_raw_views() {
             ..Default::default()
         }))
         .expect("mock server");
-    let config = write_config(dir.path(), server.addr().port(), &exports);
+    let config = write_config(dir.path(), server.addr().port(), &exports, 20);
 
     let mut herald = Herald::open(Some(&config)).expect("open herald");
     let report = runtime
@@ -149,6 +160,7 @@ fn renders_mailbox_detail_search_browser_and_raw_views() {
 
     let mut app = App::new(herald, runtime, Some("work".to_string()));
     app.color = true;
+    assert_eq!(app.page_size, 20);
     assert_eq!(app.total, 2);
     assert_eq!(app.messages[0].subject.as_deref(), Some("会议纪要"));
     assert_eq!(app.messages[1].subject.as_deref(), Some("项目进度汇报"));
@@ -290,16 +302,63 @@ fn renders_mailbox_detail_search_browser_and_raw_views() {
     app.clear_search();
     assert_eq!(app.total, 2);
 
+    app.run_search_with(
+        SearchKind::Keyword,
+        SearchField::Subject,
+        "项目".to_string(),
+    );
+    assert_eq!(app.total, 1);
+    assert_eq!(app.messages[0].uidl, "m1");
+    let subject_search = compact(&render(&app, 120, 40));
+    assert!(subject_search.contains("主题"), "{subject_search}");
+    app.run_search_with(SearchKind::Keyword, SearchField::To, "bob".to_string());
+    assert_eq!(app.total, 1);
+    assert_eq!(app.messages[0].uidl, "m2");
+    app.run_search_with(SearchKind::Keyword, SearchField::To, "alice".to_string());
+    assert_eq!(app.total, 2, "To should match both To and Cc headers");
+    app.run_search_with(SearchKind::Keyword, SearchField::From, "李四".to_string());
+    assert_eq!(app.total, 1);
+    assert_eq!(app.messages[0].uidl, "m2");
+    app.run_search_with(
+        SearchKind::Keyword,
+        SearchField::Body,
+        "下周计划".to_string(),
+    );
+    assert_eq!(app.total, 1);
+    assert_eq!(app.messages[0].uidl, "m2");
+    app.clear_search();
+
     app.handle_key(key(KeyCode::Char('/')));
     assert_eq!(input_label(&app), "关键词搜索");
+    assert_eq!(input_field(&app), "全部字段");
     app.handle_key(key(KeyCode::Tab));
     assert_eq!(input_label(&app), "混合搜索");
     app.handle_key(key(KeyCode::Tab));
     assert_eq!(input_label(&app), "语义搜索");
     app.handle_key(key(KeyCode::Tab));
     assert_eq!(input_label(&app), "关键词搜索");
+    for field in ["发件人", "收件人", "主题", "正文", "全部字段"] {
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        assert_eq!(input_field(&app), field);
+        assert_eq!(input_label(&app), "关键词搜索");
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+    assert_eq!(input_field(&app), "发件人");
+    for ch in "李四".chars() {
+        app.handle_key(key(KeyCode::Char(ch)));
+    }
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.total, 1);
+    assert_eq!(app.messages[0].uidl, "m2");
+    let search = app.search.as_ref().expect("field search");
+    assert_eq!(search.field, SearchField::From);
+    assert_eq!(search.kind, SearchKind::Keyword);
     app.handle_key(key(KeyCode::Esc));
     assert!(matches!(app.mode, herald_tui::app::Mode::Browse));
+    assert!(app.search.is_some(), "closing the box keeps the search");
+    app.clear_search();
+    assert!(app.search.is_none());
+    assert_eq!(app.total, 2);
 
     app.selected = 1;
     app.load_detail();
@@ -317,4 +376,108 @@ fn renders_mailbox_detail_search_browser_and_raw_views() {
 
     let tiny = compact(&render(&app, 30, 6));
     assert!(tiny.contains("终端太小"), "{tiny}");
+}
+
+fn synced_app(page_size: usize, messages: Vec<MockMessage>) -> (App, tempfile::TempDir) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let exports = dir.path().join("exports");
+    std::fs::create_dir_all(&exports).unwrap();
+    let server = runtime
+        .block_on(MockPop3Server::start(MockConfig {
+            messages,
+            ..Default::default()
+        }))
+        .expect("mock server");
+    let config = write_config(dir.path(), server.addr().port(), &exports, page_size);
+    let mut herald = Herald::open(Some(&config)).expect("open herald");
+    runtime
+        .block_on(herald.sync(SyncOptions {
+            account: Some("work".to_string()),
+            all: true,
+            with_body: true,
+            ..Default::default()
+        }))
+        .expect("sync");
+    (App::new(herald, runtime, Some("work".to_string())), dir)
+}
+
+#[test]
+fn read_state_is_local_and_tracks_preview_open_and_toggle() {
+    let (mut app, _dir) = synced_app(20, vec![message_one(), message_two()]);
+    assert_eq!(app.total, 2);
+    assert_eq!(app.unread_total, 2);
+    assert!(app.messages.iter().all(|message| !message.is_read));
+    assert!(
+        !app.detail.as_ref().unwrap().is_read,
+        "previewing the selected message must not mark it read"
+    );
+
+    app.handle_key(key(KeyCode::Char('u')));
+    assert!(app.messages[0].is_read);
+    assert_eq!(app.unread_total, 1);
+    assert!(app.status_text().contains("已读"));
+    let marker = compact(&render(&app, 120, 40));
+    assert_eq!(
+        marker.matches('●').count(),
+        1,
+        "one unread marker:\n{marker}"
+    );
+
+    app.handle_key(key(KeyCode::Char('u')));
+    assert!(!app.messages[0].is_read);
+    assert_eq!(app.unread_total, 2);
+
+    app.load_detail();
+    assert!(app.messages[0].is_read);
+    assert_eq!(app.unread_total, 1);
+    assert!(app.detail.as_ref().unwrap().is_read);
+    let stored = app
+        .herald
+        .get_stored_message(Some("work"), "m2")
+        .expect("stored message");
+    assert!(stored.is_read, "the flag must be persisted in SQLite");
+}
+
+#[test]
+fn honors_configured_page_size() {
+    let (mut app, _dir) = synced_app(1, vec![message_one(), message_two()]);
+    assert_eq!(app.page_size, 1);
+    assert_eq!(app.total, 2);
+    assert_eq!(app.page_count(), 2);
+    assert_eq!(app.messages.len(), 1);
+    assert_eq!(app.messages[0].uidl, "m2");
+    let first = compact(&render(&app, 120, 40));
+    assert!(first.contains("第1/2页"), "{first}");
+
+    app.handle_key(key(KeyCode::PageDown));
+    assert_eq!(app.page, 1);
+    assert_eq!(app.messages.len(), 1);
+    assert_eq!(app.messages[0].uidl, "m1");
+    let second = compact(&render(&app, 120, 40));
+    assert!(second.contains("第2/2页"), "{second}");
+}
+
+#[test]
+fn demo_config_opens_without_accounts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("herald.toml");
+    std::fs::write(&config, "demo = true\n\n[semantic]\nenabled = false\n").expect("write config");
+    let herald = Herald::open(Some(&config)).expect("open demo herald");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let app = App::new(herald, runtime, None);
+    assert_eq!(app.account.as_deref(), Some("demo"));
+    assert_eq!(app.total, 25);
+    assert_eq!(app.unread_total, 25);
+    assert_eq!(app.messages.len(), 20);
+    assert_eq!(app.page_count(), 2);
+    let screen = compact(&render(&app, 120, 40));
+    assert!(screen.contains("共25封"), "{screen}");
+    assert!(screen.contains("未读25"), "{screen}");
 }

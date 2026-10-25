@@ -6,10 +6,11 @@ Herald 是一个用 Rust 编写的**只读 POP3 邮箱客户端**，面向 AI Ag
 - **CLI**：可脚本化，支持 `--json`。
 - **TUI**：完整的终端收件箱，含中文搜索、原文查看与内置附件导出浏览器。
 - **本地缓存**：UIDL 增量同步，头部、正文、附件元数据与附件内容（可选）全部落在单个 SQLite 文件中。
-- **中文搜索**：jieba 预分词 + contentless FTS5；可选本地 ONNX 语义检索，两路可 RRF 混合（CLI/TUI）。
+- **中文搜索**：jieba 预分词 + contentless FTS5；可选本地 ONNX 语义检索，两路可 RRF 混合（CLI/TUI）；支持按发件人、收件人、主题、正文单独检索。
+- **本地已读状态**：只写本地 SQLite，不向服务器发送任何标记；打开邮件自动置为已读，也可手动切换。
 - **便携优先**：默认把配置、数据库、模型放在可执行文件旁边；目录不可写时自动降级并明确提示。
 
-Herald **不删除、不标记已读、不移动邮件，也不支持 IMAP/SMTP**。
+Herald **不删除、不移动邮件，也不会修改服务器上的已读状态，也不支持 IMAP/SMTP**。已读/未读仅是本地视图。
 
 ---
 
@@ -22,10 +23,11 @@ Herald **不删除、不标记已读、不移动邮件，也不支持 IMAP/SMTP*
 | 邮件解析 | 头部、纯文本/HTML 正文、中文编码（GBK/BIG5/UTF-8 等）、附件元数据 |
 | 按需正文 | 首次查看时 RETR 并缓存，之后离线读取 |
 | 附件 | 元数据默认同步；内容按需拉取并存入 SQLite BLOB，默认不落盘 |
-| 关键词搜索 | jieba + FTS5，FTS 无结果时回退 LIKE，适合中文子串 |
+| 关键词搜索 | jieba + FTS5，FTS 无结果时回退 LIKE；可按发件人/收件人（To+Cc）/主题/正文限定 |
 | 语义搜索 | 本地 `bge-small-zh-v1.5`（512 维），模型与 tokenizer 目录可分开配置，仅供 CLI/TUI |
+| 已读状态 | 本地 SQLite 字段，打开即已读，可手动切换；列表显示未读圆点与未读数 |
 | MCP | 7 个只读工具，列表默认 20 / 最大 100，正文 32KB 截断，原文 256KB 上限 |
-| TUI | 账户切换、同步、分页排序、详情、搜索、原文、附件导出 |
+| TUI | 账户切换、同步、分页排序（每页数可配置）、详情、搜索、原文、附件导出 |
 
 ---
 
@@ -90,6 +92,9 @@ CLI 与 TUI 固定启用 `semantic`；MCP 不启用，也不会加载模型。
 编辑 `herald.toml`：
 
 ```toml
+# 本地试用：true 时忽略账户，启动内置假邮箱 + 临时数据库，退出后自动清空
+demo = false
+
 default_account = "work"
 # database 可省略，默认是配置文件所在目录下的 herald.db
 
@@ -116,6 +121,9 @@ enabled = true
 model_name = "bge-small-zh-v1.5"
 # model_path = "models/bge-small-zh-v1.5"
 # tokenizer_path = "models/bge-small-zh-v1.5-tokenizer"  # 可选；缺省与模型目录相同
+
+[ui]
+page_size = 20                   # TUI 每页邮件数（也用于搜索结果分页）
 ```
 
 > `password_env` 指向的环境变量不存在或为空时会直接报错，**不会回退到明文密码**。
@@ -156,14 +164,21 @@ HF_ENDPOINT=https://hf-mirror.example ./target/release/herald models download
 ./target/release/herald sync --index          # 为已缓存正文批量升级全文 embedding
 
 ./target/release/herald list --limit 20 --offset 0
+./target/release/herald list --unread                      # 只看本地未读
 ./target/release/herald search 项目                            # 默认：有模型时混合
 ./target/release/herald search 项目进度 --mode keyword
 ./target/release/herald search 项目进度 --mode semantic
 ./target/release/herald search 项目进度 --mode hybrid
 ./target/release/herald search 项目进度 --semantic             # 等价于 --mode semantic
-./target/release/herald show <uidl>
+./target/release/herald search 张三 --field from
+./target/release/herald search 李四 --field to                 # 同时匹配 To 与 Cc
+./target/release/herald search 周报 --field subject
+./target/release/herald search 下周计划 --field body
+./target/release/herald show <uidl>                            # 同时标记为本地已读
 ./target/release/herald show <uidl> --full-body
 ./target/release/herald show <uidl> --raw
+./target/release/herald mark <uidl>                            # 标记已读（仅本地）
+./target/release/herald mark <uidl> --unread                   # 标记未读（仅本地）
 ./target/release/herald status
 
 ./target/release/herald export-attachment <uidl> 0 ./exports
@@ -173,6 +188,10 @@ HF_ENDPOINT=https://hf-mirror.example ./target/release/herald models download
 
 `search` 默认 `--mode auto`：`semantic.enabled` 打开且模型文件齐全时使用混合检索，否则用关键词。混合检索把关键词（bm25）与语义（向量距离）两路结果按名次做 RRF 融合（`1/(60+名次)`，按 UIDL 去重），不需要校准两种分数量纲；语义不可用时自动降级为关键词，并在命令行 stderr 或 TUI 状态栏明确提示。
 
+`--field` 可选 `all`（默认）、`from`、`to`、`subject`、`body`。字段限定使用对相应列的 `LIKE` 子串匹配（`to` 同时匹配 To 与 Cc），不走 FTS；因为 embedding 覆盖整封邮件，字段限定检索固定使用关键词模式，`--mode semantic` 会被拒绝，混合模式则自动只走关键词并给出提示。`auto` 在字段限定时同样落到关键词。
+
+已读/未读只存在本地 SQLite 的 `is_read` 列。`show` 与 TUI 中按 `Enter` 打开详情会置为已读（仅预览不置读），`mark` 可显式改回；服务器端状态不受影响。旧数据库首次打开会自动补上该列。
+
 ### 4.4 TUI
 
 ```bash
@@ -181,18 +200,19 @@ HF_ENDPOINT=https://hf-mirror.example ./target/release/herald models download
 
 TUI 已并入 `herald`，不再单独产出 `herald-tui` 可执行文件。
 
-选中邮件会立即显示**本地已缓存的详情**，移动选择不访问网络；正文尚未缓存时详情区会提示按 `Enter` 从服务器拉取。原始邮件视图会把 CRLF/制表符/控制字符规范化，并限制在 256KB 内显示。
+选中邮件会立即显示**本地已缓存的详情**，移动选择不访问网络；正文尚未缓存时详情区会提示按 `Enter` 从服务器拉取。原始邮件视图会把 CRLF/制表符/控制字符规范化，并限制在 256KB 内显示。列表左侧 `●` 表示本地未读；预览不会改状态，按 `Enter` 打开详情才置为已读。每页邮件数由 `[ui] page_size` 控制。
 
 | 按键 | 作用 |
 |---|---|
 | `s` / `S` | 增量同步 / 同步全部新邮件 |
-| `/` | 搜索；输入框内 `Tab` 循环关键词 → 混合 → 语义（默认混合，需模型就绪） |
+| `/` | 搜索；输入框内 `Tab` 循环关键词 → 混合 → 语义（默认混合，需模型就绪），`Ctrl+F` 循环全部字段 → 发件人 → 收件人 → 主题 → 正文 |
 | `a` | 切换账户 |
 | `o` / `O` | 切换排序字段（日期/发件人/主题）/ 反向 |
 | `[` `]` / PgUp PgDn | 翻页 |
 | `↑ ↓ j k` | 移动选择（详情聚焦时滚动正文） |
 | `g` / `G` | 跳到首/末条 |
-| `Enter` | 加载未缓存正文 / 重新拉取详情 |
+| `Enter` | 加载未缓存正文 / 重新拉取详情（并标记本地已读） |
+| `u` | 标记已读 / 未读（仅本地） |
 | `Tab` | 切换列表/详情焦点 |
 | `r` | 查看原始邮件（核对 RFC822 头部、编码与 MIME 边界） |
 | `e` | 导出附件 |
@@ -210,32 +230,35 @@ TUI 已并入 `herald`，不再单独产出 `herald-tui` 可执行文件。
 
 #### 用假邮件试用（无需真实邮箱）
 
-仓库自带一个可运行的 mock POP3 服务，会生成中文邮件、HTML 和附件，并写好试用配置。
+在 `herald.toml` 里加一行 `demo = true` 即可。启动时会在进程内起一个假 POP3 服务，注入 25 封中文样例邮件，使用系统临时目录里的独立数据库并自动完成首次同步；**进程退出后临时数据库与假邮箱一起清空**，下次启动又是干净状态。账户名固定为 `demo`。
 
-终端 A 启动服务：
+```toml
+demo = true
+```
+
+```bash
+./target/debug/herald.exe --config D:/herald-demo.toml tui
+# 或者先看看同步结果
+./target/debug/herald.exe --config D:/herald-demo.toml list --limit 5
+./target/debug/herald.exe --config D:/herald-demo.toml search 评审 --field subject
+```
+
+`demo = true` 时配置文件里的 `[[accounts]]` 会被忽略，因此可以只写这一行；`database`、`attachments.export_dir` 也会被临时目录覆盖。语义检索仍按 `[semantic]` 的配置读取模型目录；模型文件存在时，首次自动同步会顺带写入向量，语义/混合检索可直接使用。首次使用前需下载模型（约 95 MB，可重复执行；这里走 `hf-mirror.com`，能直连 HuggingFace 时去掉 `--mirror`）：
+
+```bash
+./target/debug/herald.exe --config D:/herald-demo.toml models download --mirror https://hf-mirror.com
+./target/debug/herald.exe --config D:/herald-demo.toml search 团队开会讨论了什么 --mode semantic
+```
+
+每次启动都会重新同步并重建索引；25 封邮件在本地 CPU 上通常一两秒内完成。模型未下载时不做 embedding，关键词搜索照常可用，混合检索会自动退化为关键词并在状态栏提示。
+
+默认 25 封样例邮件（含分页）。内容覆盖：纯文本、HTML、multipart/alternative、UTF-8/GBK/BIG5、8bit/base64/quoted-printable、无主题、空正文、折叠长主题，以及 PDF/文本/二进制/内嵌图片附件。最新一封“本周项目进度汇报”带 `说明.txt`、`data.bin` 和内嵌 `logo.png`；“电子发票（仅附件）”只有 `发票.pdf`。可搜索“对账”或“评审”，或在 TUI 里选中邮件按 `e` 试导出。
+
+需要固定端口、自定义账号或调整样例数量时，仍可单独运行 mock 服务（终端 A 启动、终端 B 使用生成的配置，语义索引可跨进程保留）：
 
 ```bash
 cargo run -p herald-core --features test-support --example mock_pop3 -- --dir D:/herald-demo
 ```
-
-终端 B 同步并打开 TUI：
-
-```bash
-./target/debug/herald.exe --config D:/herald-demo/herald.toml sync --all --with-attachments
-./target/debug/herald.exe --config D:/herald-demo/herald.toml tui
-```
-
-生成的配置已启用语义检索。想试语义搜索，先下载模型（约 95 MB，可重复执行；这里走 `hf-mirror.com`，能直连 HuggingFace 时去掉 `--mirror`），同步时加 `--index` 写入向量：
-
-```bash
-./target/debug/herald.exe --config D:/herald-demo/herald.toml models download --mirror https://hf-mirror.com
-./target/debug/herald.exe --config D:/herald-demo/herald.toml sync --all --with-attachments --index
-./target/debug/herald.exe --config D:/herald-demo/herald.toml search 团队开会讨论了什么 --semantic
-```
-
-TUI 里按 `?` 也可以切换语义检索。没有下载模型时，同步会跳过向量写入并给出提示，普通关键词搜索不受影响。
-
-默认生成 25 封样例邮件（含分页）。内容覆盖：纯文本、HTML、multipart/alternative、UTF-8/GBK/BIG5、8bit/base64/quoted-printable、无主题、空正文、折叠长主题，以及 PDF/文本/二进制/内嵌图片附件。最新一封“本周项目进度汇报”带 `说明.txt`、`data.bin` 和内嵌 `logo.png`；“电子发票（仅附件）”只有 `发票.pdf`。可搜索“对账”或“评审”，或在 TUI 里选中邮件按 `e` 试导出。服务会打印实际端口、配置路径和可直接复制的命令，按 `Ctrl+C` 停止。
 
 可选参数：`--messages <1-28>`、`--port <port>`（默认自动分配）、`--no-top` 模拟不支持 TOP 的服务器。
 
@@ -260,10 +283,10 @@ TUI 里按 `?` 也可以切换语义检索。没有下载模型时，同步会�
 |---|---|---|
 | `list_accounts` | 无 | `{ accounts: [...] }` |
 | `sync_mailbox` | `account?`, `limit?`, `with_body?` | `{ account, fetched, new_count, last_uidl, synced_at, ... }` |
-| `list_messages` | `account?`, `limit?=20`, `offset?`, `from?`, `since?`, `until?` | `{ total, messages }` |
-| `get_message` | `account?`, `uidl`, `include_full_body?=false` | 结构化邮件；**无 attachments 字段** |
+| `list_messages` | `account?`, `limit?=20`, `offset?`, `from?`, `since?`, `until?`, `unread_only?` | `{ total, messages }`（含 `is_read`） |
+| `get_message` | `account?`, `uidl`, `include_full_body?=false` | 结构化邮件（含 `is_read`）；**无 attachments 字段** |
 | `get_raw_message` | `account?`, `uidl` | `{ uidl, raw, truncated }` |
-| `search_messages` | `account?`, `query`, `limit?=20`, `offset?` | `{ total, messages }` |
+| `search_messages` | `account?`, `query`, `field?`(all/from/to/subject/body), `limit?=20`, `offset?` | `{ total, messages }` |
 | `get_sync_status` | `account?` | `{ account, last_sync_at, last_uidl, total_messages }` |
 
 硬性约束：

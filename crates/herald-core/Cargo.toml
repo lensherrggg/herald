@@ -30,15 +30,13 @@ rcgen = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sqlite-vec.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
 toml.workspace = true
 tracing.workspace = true
 webpki-roots.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true
 
 [[example]]
 name = "mock_pop3"

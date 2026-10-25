@@ -200,6 +200,14 @@ async fn seven_tools_round_trip_over_stdio() {
     assert_eq!(listed["messages"][0]["uidl"], "m1");
     assert_eq!(listed["messages"][0]["subject"], "项目进度汇报");
     assert_eq!(listed["messages"][0]["from"], "张三 <zhangsan@example.com>");
+    assert_eq!(listed["messages"][0]["is_read"], false);
+
+    let unread = tool_payload(
+        &client
+            .call_tool("list_messages", json!({"unread_only": true}))
+            .await,
+    );
+    assert_eq!(unread["total"], 1);
 
     let found = tool_payload(
         &client
@@ -209,8 +217,31 @@ async fn seven_tools_round_trip_over_stdio() {
     assert_eq!(found["total"], 1);
     assert_eq!(found["messages"][0]["uidl"], "m1");
 
+    let by_to = tool_payload(
+        &client
+            .call_tool("search_messages", json!({"query": "alice", "field": "to"}))
+            .await,
+    );
+    assert_eq!(by_to["total"], 1);
+    let by_from = tool_payload(
+        &client
+            .call_tool("search_messages", json!({"query": "李四", "field": "from"}))
+            .await,
+    );
+    assert_eq!(by_from["total"], 0);
+    let by_subject = tool_payload(
+        &client
+            .call_tool(
+                "search_messages",
+                json!({"query": "项目", "field": "subject"}),
+            )
+            .await,
+    );
+    assert_eq!(by_subject["total"], 1);
+
     let detail = tool_payload(&client.call_tool("get_message", json!({"uidl": "m1"})).await);
     assert_eq!(detail["subject"], "项目进度汇报");
+    assert_eq!(detail["is_read"], false);
     assert!(detail["body_text"].as_str().unwrap().contains("进度正常"));
     assert_eq!(detail["body_truncated"], false);
     assert!(

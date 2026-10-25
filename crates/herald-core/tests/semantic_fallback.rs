@@ -4,7 +4,7 @@ use std::path::Path;
 
 use herald_core::config::{AccountConfig, Config, Security};
 use herald_core::mock_pop3::{MockConfig, MockMessage, MockPop3Server};
-use herald_core::model::SyncOptions;
+use herald_core::model::{SearchField, SearchOptions, SyncOptions};
 use herald_core::paths::PathLayout;
 use herald_core::{Herald, HeraldError, SearchKind};
 
@@ -71,12 +71,28 @@ async fn sync_survives_missing_model_and_semantic_search_reports_it() {
     assert_eq!(report.new_count, 1);
 
     let keyword = herald
-        .search(None, "项目", SearchKind::Keyword, 10, 0)
+        .search(
+            None,
+            "项目",
+            SearchKind::Keyword,
+            &SearchOptions {
+                limit: 10,
+                ..Default::default()
+            },
+        )
         .expect("keyword search");
     assert_eq!(keyword.total, 1);
 
     let err = herald
-        .search(None, "项目", SearchKind::Semantic, 10, 0)
+        .search(
+            None,
+            "项目",
+            SearchKind::Semantic,
+            &SearchOptions {
+                limit: 10,
+                ..Default::default()
+            },
+        )
         .unwrap_err();
     match err {
         HeraldError::Model(message) => {
@@ -86,9 +102,20 @@ async fn sync_survives_missing_model_and_semantic_search_reports_it() {
         other => panic!("expected MODEL_ERROR, got {other:?}"),
     }
 
-    assert_eq!(herald.default_search_kind(), SearchKind::Keyword);
+    assert_eq!(
+        herald.default_search_kind(SearchField::All),
+        SearchKind::Keyword
+    );
     let hybrid = herald
-        .search(None, "项目", SearchKind::Hybrid, 10, 0)
+        .search(
+            None,
+            "项目",
+            SearchKind::Hybrid,
+            &SearchOptions {
+                limit: 10,
+                ..Default::default()
+            },
+        )
         .expect("hybrid must degrade without a model");
     assert_eq!(hybrid.total, 1);
     assert_eq!(hybrid.messages[0].uidl, "m1");

@@ -1,3 +1,4 @@
+#[cfg(feature = "semantic")]
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -5,7 +6,8 @@ use crate::config::{AccountConfig, Config};
 use crate::error::{HeraldError, Result};
 use crate::model::{
     default_export_base, AccountSummary, AttachmentData, MessageDetail, MessageFilter,
-    MessageSummary, SearchKind, SearchResult, SyncErrorRecord, SyncOptions, SyncReport, SyncStatus,
+    MessageSummary, SearchField, SearchKind, SearchOptions, SearchResult, SyncErrorRecord,
+    SyncOptions, SyncReport, SyncStatus,
 };
 use crate::parse::parse_message;
 use crate::paths::{PathLayout, ResolvedPaths};
@@ -25,6 +27,7 @@ pub struct Herald {
     pub store: Store,
     #[cfg(feature = "semantic")]
     semantic: SemanticService,
+    demo: Option<crate::demo::DemoSession>,
 }
 
 impl Herald {
@@ -39,12 +42,28 @@ impl Herald {
         Self::open_with_config(config, layout)
     }
 
-    pub fn open_with_config(config: Config, layout: PathLayout) -> Result<Self> {
+    pub fn open_with_config(mut config: Config, layout: PathLayout) -> Result<Self> {
         config.validate()?;
+        let demo = if config.demo {
+            Some(crate::demo::configure(&mut config)?)
+        } else {
+            None
+        };
         let paths = layout.complete(&config);
-        let store = Store::open(&paths.database_path)?;
+        let mut store = Store::open(&paths.database_path)?;
         for account in &config.accounts {
             store.ensure_account(account)?;
+        }
+        let mut demo_jobs = Vec::new();
+        if let Some(session) = &demo {
+            let (primed, jobs) = crate::demo::initial_sync(&config, store)?;
+            store = primed;
+            demo_jobs = jobs;
+            tracing::info!(
+                "演示模式：内置假邮箱 127.0.0.1:{}，临时数据库 {}（退出后自动清空）",
+                session.addr().port(),
+                paths.database_path.display()
+            );
         }
         #[cfg(feature = "semantic")]
         let semantic = SemanticService::new(
@@ -52,15 +71,29 @@ impl Herald {
             paths.models_dir.clone(),
             paths.tokenizer_dir.clone(),
         );
-        let herald = Self {
+        #[allow(unused_mut)]
+        let mut herald = Self {
             config,
             paths,
             store,
             #[cfg(feature = "semantic")]
             semantic,
+            demo,
         };
+        // Build embeddings up front only when the model is already on disk, so
+        // semantic search works immediately in the trial session.
+        #[cfg(feature = "semantic")]
+        if herald.semantic_enabled() && herald.semantic.model_files_present() {
+            herald.apply_embeddings(&demo_jobs);
+        }
+        #[cfg(not(feature = "semantic"))]
+        let _ = demo_jobs;
         herald.log_startup();
         Ok(herald)
+    }
+
+    pub fn demo_active(&self) -> bool {
+        self.demo.is_some()
     }
 
     fn log_startup(&self) {
@@ -91,7 +124,12 @@ impl Herald {
     }
 
     /// Hybrid search when embeddings are usable, keyword-only otherwise.
-    pub fn default_search_kind(&self) -> SearchKind {
+    /// Field-scoped queries always stay on the keyword path because
+    /// embeddings are built from the whole message.
+    pub fn default_search_kind(&self, field: SearchField) -> SearchKind {
+        if field != SearchField::All {
+            return SearchKind::Keyword;
+        }
         #[cfg(feature = "semantic")]
         if self.semantic_enabled() && self.semantic.model_files_present() {
             return SearchKind::Hybrid;
@@ -161,8 +199,31 @@ impl Herald {
         limit: usize,
         offset: usize,
     ) -> Result<SearchResult> {
+        self.keyword_search_with(
+            account,
+            query,
+            &SearchOptions {
+                limit,
+                offset,
+                ..Default::default()
+            },
+        )
+    }
+
+    pub fn keyword_search_with(
+        &self,
+        account: Option<&str>,
+        query: &str,
+        options: &SearchOptions,
+    ) -> Result<SearchResult> {
         let (_, account_id) = self.account_and_id(account)?;
-        self.store.keyword_search(account_id, query, limit, offset)
+        self.store.keyword_search_with(
+            account_id,
+            query,
+            options.field,
+            options.limit,
+            options.offset,
+        )
     }
 
     pub fn search(
@@ -170,13 +231,12 @@ impl Herald {
         account: Option<&str>,
         query: &str,
         kind: SearchKind,
-        limit: usize,
-        offset: usize,
+        options: &SearchOptions,
     ) -> Result<SearchResult> {
         match kind {
-            SearchKind::Keyword => self.keyword_search(account, query, limit, offset),
-            SearchKind::Semantic => self.semantic_search(account, query, limit, offset),
-            SearchKind::Hybrid => self.hybrid_search(account, query, limit, offset),
+            SearchKind::Keyword => self.keyword_search_with(account, query, options),
+            SearchKind::Semantic => self.semantic_search(account, query, options),
+            SearchKind::Hybrid => self.hybrid_search(account, query, options),
         }
     }
 
@@ -185,21 +245,19 @@ impl Herald {
         &mut self,
         account: Option<&str>,
         query: &str,
-        limit: usize,
-        offset: usize,
+        options: &SearchOptions,
     ) -> Result<SearchResult> {
+        if options.field != SearchField::All {
+            return Err(HeraldError::Unsupported(
+                "语义检索不支持字段限定；请改用关键词或混合检索".to_string(),
+            ));
+        }
         let (_, account_id) = self.account_and_id(account)?;
-        let mut result =
-            self.semantic
-                .search(&self.store, account_id, query, limit.saturating_add(offset))?;
-        result.total = result.messages.len();
-        result.messages = result
-            .messages
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .collect();
-        Ok(result)
+        let window = options.limit.saturating_add(options.offset).max(1);
+        let result = self
+            .semantic
+            .search(&self.store, account_id, query, window)?;
+        Ok(finish_results(result.messages, options, None))
     }
 
     #[cfg(not(feature = "semantic"))]
@@ -207,8 +265,7 @@ impl Herald {
         &mut self,
         _account: Option<&str>,
         _query: &str,
-        _limit: usize,
-        _offset: usize,
+        _options: &SearchOptions,
     ) -> Result<SearchResult> {
         Err(HeraldError::Unsupported(
             "此二进制未编译语义检索支持（feature = semantic）".to_string(),
@@ -220,14 +277,20 @@ impl Herald {
         &mut self,
         account: Option<&str>,
         query: &str,
-        limit: usize,
-        offset: usize,
+        options: &SearchOptions,
     ) -> Result<SearchResult> {
+        if options.field != SearchField::All {
+            let mut result = self.keyword_search_with(account, query, options)?;
+            result.note = Some("字段限定检索仅使用关键词".to_string());
+            return Ok(result);
+        }
         let (_, account_id) = self.account_and_id(account)?;
         // Take as many candidates from each side as we intend to return; RRF
         // only needs the relative order, not the raw scores.
-        let window = limit.saturating_add(offset).max(1);
-        let keyword = self.store.keyword_search(account_id, query, window, 0)?;
+        let window = options.limit.saturating_add(options.offset).max(1);
+        let keyword =
+            self.store
+                .keyword_search_with(account_id, query, SearchField::All, window, 0)?;
         let (semantic, note) = match self.semantic.search(&self.store, account_id, query, window) {
             Ok(result) => (result.messages, None),
             Err(err) => (
@@ -235,9 +298,8 @@ impl Herald {
                 Some(format!("语义检索不可用，已仅用关键词：{err}")),
             ),
         };
-        let mut result = fuse_rrf(&keyword.messages, &semantic, limit, offset);
-        result.note = note;
-        Ok(result)
+        let fused = fuse_rrf(&keyword.messages, &semantic);
+        Ok(finish_results(fused, options, note))
     }
 
     #[cfg(not(feature = "semantic"))]
@@ -245,10 +307,9 @@ impl Herald {
         &mut self,
         account: Option<&str>,
         query: &str,
-        limit: usize,
-        offset: usize,
+        options: &SearchOptions,
     ) -> Result<SearchResult> {
-        let mut result = self.keyword_search(account, query, limit, offset)?;
+        let mut result = self.keyword_search_with(account, query, options)?;
         result.note = Some("此二进制未编译语义检索支持，已仅用关键词".to_string());
         Ok(result)
     }
@@ -256,6 +317,17 @@ impl Herald {
     pub fn get_stored_message(&self, account: Option<&str>, uidl: &str) -> Result<MessageDetail> {
         let (_, account_id) = self.account_and_id(account)?;
         self.store.get_message(account_id, uidl)
+    }
+
+    /// Read state is local-only; the POP3 mailbox is never modified.
+    pub fn set_read(&self, account: Option<&str>, uidl: &str, read: bool) -> Result<()> {
+        let (_, account_id) = self.account_and_id(account)?;
+        self.store.set_read(account_id, uidl, read)
+    }
+
+    pub fn unread_count(&self, account: Option<&str>) -> Result<usize> {
+        let (_, account_id) = self.account_and_id(account)?;
+        self.store.unread_count(account_id)
     }
 
     /// FR-PARSE-04: the first call fetches and caches the body; later calls
@@ -484,12 +556,8 @@ fn unique_target(path: PathBuf) -> PathBuf {
 
 /// Reciprocal Rank Fusion of two ranked lists. BM25 and vector distance live
 /// on different scales, so only the positions are combined.
-fn fuse_rrf(
-    keyword: &[MessageSummary],
-    semantic: &[MessageSummary],
-    limit: usize,
-    offset: usize,
-) -> SearchResult {
+#[cfg(feature = "semantic")]
+fn fuse_rrf(keyword: &[MessageSummary], semantic: &[MessageSummary]) -> Vec<MessageSummary> {
     const RRF_K: f64 = 60.0;
     let mut fused: HashMap<&str, (f64, &MessageSummary)> = HashMap::new();
     for (rank, message) in keyword.iter().enumerate() {
@@ -509,21 +577,33 @@ fn fuse_rrf(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| b.1.date.cmp(&a.1.date))
     });
-    let total = ranked.len();
-    let messages = ranked
+    ranked
         .into_iter()
-        .skip(offset)
-        .take(limit)
         .map(|(_, message)| message.clone())
-        .collect();
+        .collect()
+}
+
+/// Paginate and annotate a candidate list that was fetched in memory
+/// (semantic / hybrid paths).
+#[cfg(feature = "semantic")]
+fn finish_results(
+    messages: Vec<MessageSummary>,
+    options: &SearchOptions,
+    note: Option<String>,
+) -> SearchResult {
+    let total = messages.len();
     SearchResult {
         total,
-        messages,
-        note: None,
+        messages: messages
+            .into_iter()
+            .skip(options.offset)
+            .take(options.limit)
+            .collect(),
+        note,
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "semantic"))]
 mod tests {
     use super::*;
 
@@ -534,6 +614,7 @@ mod tests {
             from: None,
             date: Some(date.to_string()),
             size: 0,
+            is_read: false,
         }
     }
 
@@ -547,10 +628,9 @@ mod tests {
             summary("semantic", "2024-09-04T00:00:00Z"),
             summary("both", "2024-09-03T00:00:00Z"),
         ];
-        let result = fuse_rrf(&keyword, &semantic, 10, 0);
-        assert_eq!(result.total, 3);
-        assert_eq!(result.messages[0].uidl, "both");
-        assert_eq!(result.messages.len(), 3);
+        let result = fuse_rrf(&keyword, &semantic);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].uidl, "both");
     }
 
     #[test]
@@ -564,10 +644,20 @@ mod tests {
             summary("c", "2024-09-04T00:00:00Z"),
             summary("d", "2024-09-01T00:00:00Z"),
         ];
-        let page = fuse_rrf(&keyword, &semantic, 2, 1);
+        let fused = fuse_rrf(&keyword, &semantic);
+        let options = SearchOptions {
+            limit: 2,
+            offset: 1,
+            ..Default::default()
+        };
+        let page = finish_results(fused, &options, None);
         assert_eq!(page.total, 4);
         assert_eq!(page.messages.len(), 2);
-        let all = fuse_rrf(&keyword, &semantic, 10, 0);
+        let all = finish_results(
+            fuse_rrf(&keyword, &semantic),
+            &SearchOptions::default(),
+            None,
+        );
         assert_eq!(page.messages[0].uidl, all.messages[1].uidl);
         assert_eq!(page.messages[1].uidl, all.messages[2].uidl);
     }
@@ -576,8 +666,8 @@ mod tests {
     fn rrf_ties_break_on_newer_date() {
         let keyword = vec![summary("old", "2024-09-01T00:00:00Z")];
         let semantic = vec![summary("new", "2024-09-05T00:00:00Z")];
-        let result = fuse_rrf(&keyword, &semantic, 10, 0);
-        assert_eq!(result.messages[0].uidl, "new");
+        let result = fuse_rrf(&keyword, &semantic);
+        assert_eq!(result[0].uidl, "new");
     }
 
     #[test]

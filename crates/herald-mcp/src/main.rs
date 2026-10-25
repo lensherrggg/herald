@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use herald_core::model::{MessageFilter, SyncOptions};
+use herald_core::model::{MessageFilter, SearchField, SearchOptions, SyncOptions};
 use herald_core::pop3::Pop3Options;
 use herald_core::{Herald, HeraldError};
 use rust_mcp_sdk::macros::{mcp_tool, JsonSchema};
@@ -81,6 +81,9 @@ pub struct ListMessagesArgs {
     /// Inclusive upper bound for the message date (ISO 8601 or YYYY-MM-DD).
     #[serde(default)]
     pub until: Option<String>,
+    /// Only return messages not yet marked read locally.
+    #[serde(default)]
+    pub unread_only: Option<bool>,
 }
 
 #[mcp_tool(
@@ -119,7 +122,7 @@ pub struct GetRawMessageArgs {
 
 #[mcp_tool(
     name = "search_messages",
-    description = "Chinese-friendly keyword search over subject, sender and cached bodies.",
+    description = "Chinese-friendly keyword search; optionally limit matching to sender, recipient (To/Cc), subject or body.",
     read_only_hint = true,
     idempotent_hint = true,
     destructive_hint = false,
@@ -130,12 +133,37 @@ pub struct SearchMessagesArgs {
     #[serde(default)]
     pub account: Option<String>,
     pub query: String,
+    /// Which field to match: all (default), from, to (To/Cc), subject or body.
+    #[serde(default)]
+    pub field: Option<SearchFieldArg>,
     /// Page size, 1-100 (default 20).
     #[serde(default)]
     pub limit: Option<u32>,
     /// Number of matches to skip (default 0).
     #[serde(default)]
     pub offset: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchFieldArg {
+    All,
+    From,
+    To,
+    Subject,
+    Body,
+}
+
+impl From<SearchFieldArg> for SearchField {
+    fn from(value: SearchFieldArg) -> Self {
+        match value {
+            SearchFieldArg::All => SearchField::All,
+            SearchFieldArg::From => SearchField::From,
+            SearchFieldArg::To => SearchField::To,
+            SearchFieldArg::Subject => SearchField::Subject,
+            SearchFieldArg::Body => SearchField::Body,
+        }
+    }
 }
 
 #[mcp_tool(
@@ -282,6 +310,7 @@ fn list_messages(
         from: args.from,
         since: args.since,
         until: args.until,
+        unread_only: args.unread_only.unwrap_or(false),
         ..Default::default()
     };
     let (total, messages) = herald.list_messages(args.account.as_deref(), &filter)?;
@@ -318,6 +347,7 @@ async fn run_get_message(herald: &mut Herald, args: GetMessageArgs) -> ToolOutco
         "body_text": body_text,
         "body_html": body_html,
         "body_truncated": text_truncated || html_truncated,
+        "is_read": detail.is_read,
     }))
 }
 
@@ -341,11 +371,14 @@ async fn run_get_raw(options: Pop3Options, uidl: String) -> ToolOutcome {
 fn run_search(herald: &Herald, args: SearchMessagesArgs) -> ToolOutcome {
     let limit = page_limit(args.limit).map_err(herald_error)?;
     let result = herald
-        .keyword_search(
+        .keyword_search_with(
             args.account.as_deref(),
             &args.query,
-            limit,
-            args.offset.unwrap_or(0) as usize,
+            &SearchOptions {
+                field: args.field.map(SearchField::from).unwrap_or_default(),
+                limit,
+                offset: args.offset.unwrap_or(0) as usize,
+            },
         )
         .map_err(herald_error)?;
     Ok(serde_json::json!({ "total": result.total, "messages": result.messages }))

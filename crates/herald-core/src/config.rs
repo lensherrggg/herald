@@ -8,6 +8,7 @@ use crate::error::{HeraldError, Result};
 pub const DEFAULT_MODEL_NAME: &str = "bge-small-zh-v1.5";
 pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
 pub const DEFAULT_ATTACHMENT_LIMIT: u64 = 50 * 1024 * 1024;
+pub const DEFAULT_PAGE_SIZE: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -45,6 +46,10 @@ fn default_model_name() -> String {
 
 fn default_attachment_limit() -> u64 {
     DEFAULT_ATTACHMENT_LIMIT
+}
+
+fn default_page_size() -> usize {
+    DEFAULT_PAGE_SIZE
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,8 +157,27 @@ impl Default for SemanticConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiConfig {
+    /// Messages per page in the TUI (also used for search results).
+    #[serde(default = "default_page_size")]
+    pub page_size: usize,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            page_size: DEFAULT_PAGE_SIZE,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
+    /// Local trial mode: start an embedded mock POP3 server with sample mail
+    /// and a throw-away database that is removed when the process exits.
+    #[serde(default)]
+    pub demo: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -166,6 +190,8 @@ pub struct Config {
     pub attachments: AttachmentsConfig,
     #[serde(default)]
     pub semantic: SemanticConfig,
+    #[serde(default)]
+    pub ui: UiConfig,
 }
 
 impl Config {
@@ -190,6 +216,12 @@ impl Config {
             return Err(HeraldError::Config(
                 "sync.default_limit 必须大于 0".to_string(),
             ));
+        }
+        if self.ui.page_size == 0 {
+            return Err(HeraldError::Config("ui.page_size 必须大于 0".to_string()));
+        }
+        if self.demo {
+            return Ok(());
         }
         let mut names = HashSet::new();
         for account in &self.accounts {
@@ -292,6 +324,9 @@ impl Config {
 
     pub fn sample() -> String {
         r#"# Herald 配置文件
+# 本地试用开关：true 时忽略下方账户，启动内置假邮箱和临时数据库，
+# 进程退出后数据自动清空。适合不接真实邮箱的试用。
+demo = false
 # database 可省略；省略时默认为本配置文件所在目录下的 herald.db
 # database = "herald.db"
 default_account = "work"
@@ -325,6 +360,9 @@ enabled = true
 model_name = "bge-small-zh-v1.5"
 # model_path = "models/bge-small-zh-v1.5"
 # tokenizer_path = "models/bge-small-zh-v1.5-tokenizer"  # 缺省与 model_path 相同
+
+[ui]
+page_size = 20                   # TUI 每页邮件数
 "#
         .to_string()
     }
@@ -459,6 +497,46 @@ password = "p"
             cfg.models_dir(dir),
             dir.join("models").join(DEFAULT_MODEL_NAME)
         );
+    }
+
+    #[test]
+    fn page_size_defaults_and_validation() {
+        let cfg = Config::from_toml(
+            r#"
+[[accounts]]
+name = "a"
+host = "h"
+port = 110
+security = "plain"
+username = "u"
+password = "p"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.ui.page_size, DEFAULT_PAGE_SIZE);
+        assert!(cfg.validate().is_ok());
+
+        let mut cfg = cfg;
+        cfg.ui.page_size = 0;
+        assert!(cfg.validate().is_err());
+
+        let cfg = Config::from_toml(
+            r#"
+[ui]
+page_size = 50
+
+[[accounts]]
+name = "a"
+host = "h"
+port = 110
+security = "plain"
+username = "u"
+password = "p"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.ui.page_size, 50);
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

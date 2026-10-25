@@ -1,5 +1,5 @@
 use herald_core::config::{AccountConfig, Security};
-use herald_core::model::{AttachmentMeta, MessageFilter, MessageHeader};
+use herald_core::model::{AttachmentMeta, MessageFilter, MessageHeader, SearchField};
 use herald_core::store::{Store, EMBEDDING_DIM};
 
 fn account() -> AccountConfig {
@@ -80,6 +80,53 @@ fn fts_index_is_replaced_and_searchable() {
 }
 
 #[test]
+fn field_scoped_search_limits_matches() {
+    let store = Store::open_in_memory().unwrap();
+    let account_id = store.ensure_account(&account()).unwrap();
+    let first = store
+        .upsert_header(account_id, &header("u1", "季度项目进度"))
+        .unwrap();
+    let mut second_header = header("u2", "午餐通知");
+    second_header.from = Some("李四 <lisi@example.com>".to_string());
+    second_header.to = vec!["bob@example.com".to_string()];
+    let second = store.upsert_header(account_id, &second_header).unwrap();
+    store
+        .set_body(first, Some("正文提到项目"), None, "正文 提到 项目")
+        .unwrap();
+    store
+        .set_body(second, Some("项目聚餐"), None, "项目 聚餐")
+        .unwrap();
+
+    let from = store
+        .keyword_search_with(account_id, "张三", SearchField::From, 10, 0)
+        .unwrap();
+    assert_eq!(from.total, 1);
+    assert_eq!(from.messages[0].uidl, "u1");
+
+    let to = store
+        .keyword_search_with(account_id, "bob", SearchField::To, 10, 0)
+        .unwrap();
+    assert_eq!(to.total, 1);
+    assert_eq!(to.messages[0].uidl, "u2");
+
+    let subject = store
+        .keyword_search_with(account_id, "项目", SearchField::Subject, 10, 0)
+        .unwrap();
+    assert_eq!(subject.total, 1);
+    assert_eq!(subject.messages[0].uidl, "u1");
+
+    let body = store
+        .keyword_search_with(account_id, "项目", SearchField::Body, 10, 0)
+        .unwrap();
+    assert_eq!(body.total, 2);
+
+    let all = store
+        .keyword_search_with(account_id, "项目", SearchField::All, 10, 0)
+        .unwrap();
+    assert_eq!(all.total, 2);
+}
+
+#[test]
 fn pagination_and_filters_work() {
     let store = Store::open_in_memory().unwrap();
     let account_id = store.ensure_account(&account()).unwrap();
@@ -133,6 +180,61 @@ fn pagination_and_filters_work() {
         )
         .unwrap();
     assert_eq!(total, 2);
+}
+
+#[test]
+fn read_state_is_local_and_filters_unread() {
+    let store = Store::open_in_memory().unwrap();
+    let account_id = store.ensure_account(&account()).unwrap();
+    store
+        .upsert_header(account_id, &header("u1", "第一封"))
+        .unwrap();
+    store
+        .upsert_header(account_id, &header("u2", "第二封"))
+        .unwrap();
+
+    assert_eq!(store.unread_count(account_id).unwrap(), 2);
+    let (_, page) = store
+        .list_messages(
+            account_id,
+            &MessageFilter {
+                limit: 10,
+                offset: 0,
+                unread_only: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(page.len(), 2);
+    assert!(page.iter().all(|message| !message.is_read));
+
+    store.set_read(account_id, "u1", true).unwrap();
+    assert_eq!(store.unread_count(account_id).unwrap(), 1);
+    let detail = store.get_message(account_id, "u1").unwrap();
+    assert!(detail.is_read);
+
+    let (total, page) = store
+        .list_messages(
+            account_id,
+            &MessageFilter {
+                limit: 10,
+                offset: 0,
+                unread_only: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(total, 1);
+    assert_eq!(page[0].uidl, "u2");
+
+    // Toggling back to unread restores the count.
+    store.set_read(account_id, "u1", false).unwrap();
+    assert_eq!(store.unread_count(account_id).unwrap(), 2);
+
+    // Unknown UIDLs are reported instead of silently ignored.
+    let missing = store.set_read(account_id, "missing", true).unwrap_err();
+    assert!(matches!(missing, herald_core::HeraldError::NotFound(_)));
+    assert_eq!(store.unread_count(account_id).unwrap(), 2);
 }
 
 #[test]
