@@ -49,8 +49,12 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let last_sync = app
         .sync_status
         .as_ref()
-        .and_then(|status| status.last_sync_at.as_deref())
-        .unwrap_or("从未同步");
+        .and_then(|status| status.last_sync_at.as_deref());
+    let last_sync = if last_sync.is_some() {
+        herald_core::time::china_short(last_sync)
+    } else {
+        "从未同步".to_string()
+    };
     let sort_arrow = if app.descending { "↓" } else { "↑" };
     let title = format!(
         " Herald · {account} · 共 {} 封 · 未读 {} · 第 {}/{} 页 · 排序 {}{} · 同步 {last_sync} ",
@@ -169,7 +173,10 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
         labelled("发件人", detail.header.from.as_deref().unwrap_or("-")),
         labelled("收件人", &join_addrs(&detail.header.to)),
         labelled("抄送", &join_addrs(&detail.header.cc)),
-        labelled("时间", detail.header.date.as_deref().unwrap_or("-")),
+        labelled(
+            "时间（UTC+8）",
+            &herald_core::time::china_datetime(detail.header.date.as_deref()),
+        ),
         labelled("大小", &format_size(detail.header.size)),
         labelled("UIDL", &detail.header.uidl),
         labelled(

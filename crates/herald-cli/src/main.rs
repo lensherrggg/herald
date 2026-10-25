@@ -5,6 +5,7 @@ use anyhow::{bail, Context};
 use clap::{Parser, Subcommand};
 use herald_core::model::{MessageFilter, SearchField, SearchKind, SearchOptions, SyncOptions};
 use herald_core::paths::PathLayout;
+use herald_core::time;
 use herald_core::{Config, Herald};
 use tracing_subscriber::EnvFilter;
 
@@ -266,7 +267,10 @@ async fn run(config: Option<PathBuf>, json: bool, command: Command) -> anyhow::R
                 if let Some(uidl) = &report.last_uidl {
                     println!("最后 UIDL：{uidl}");
                 }
-                println!("同步时间：{}", report.synced_at);
+                println!(
+                    "同步时间：{}（北京时间）",
+                    time::china_datetime(Some(&report.synced_at))
+                );
                 for error in &report.errors {
                     let uidl = error.uidl.as_deref().unwrap_or("-");
                     println!("警告 [{uidl}]：{}", error.error);
@@ -364,7 +368,11 @@ async fn run(config: Option<PathBuf>, json: bool, command: Command) -> anyhow::R
                 println!("账户：{}", status.account);
                 println!(
                     "最后同步：{}",
-                    status.last_sync_at.as_deref().unwrap_or("从未")
+                    status
+                        .last_sync_at
+                        .as_deref()
+                        .map(|value| format!("{}（北京时间）", time::china_datetime(Some(value))))
+                        .unwrap_or_else(|| "从未".to_string())
                 );
                 println!("最后 UIDL：{}", status.last_uidl.as_deref().unwrap_or("-"));
                 println!("服务器邮件数：{}", status.total_messages);
@@ -372,7 +380,11 @@ async fn run(config: Option<PathBuf>, json: bool, command: Command) -> anyhow::R
                 println!("同步错误数：{}", status.error_count);
                 for error in &errors {
                     let uidl = error.uidl.as_deref().unwrap_or("-");
-                    println!("  最近错误 [{uidl}] {}：{}", error.at, error.error);
+                    println!(
+                        "  最近错误 [{uidl}] {}：{}",
+                        time::china_datetime(Some(&error.at)),
+                        error.error
+                    );
                 }
             }
             Ok(())
@@ -463,7 +475,11 @@ fn accounts(herald: &Herald, json: bool) -> anyhow::Result<()> {
             account.name,
             account.username,
             account.host,
-            account.last_sync_at.as_deref().unwrap_or("从未"),
+            account
+                .last_sync_at
+                .as_deref()
+                .map(|value| format!("{}（北京时间）", time::china_datetime(Some(value))))
+                .unwrap_or_else(|| "从未".to_string()),
             account.total_messages
         );
     }
@@ -534,7 +550,10 @@ async fn show(
     if !detail.header.cc.is_empty() {
         println!("抄送：{}", detail.header.cc.join(", "));
     }
-    println!("时间：{}", detail.header.date.as_deref().unwrap_or("(无)"));
+    println!(
+        "时间：{}（北京时间）",
+        time::china_datetime(detail.header.date.as_deref())
+    );
     println!("大小：{} 字节", detail.header.size);
     println!("状态：已读（本地）");
     if !detail.attachments.is_empty() {
@@ -581,7 +600,7 @@ fn print_messages(total: usize, messages: &[herald_core::MessageSummary]) {
         println!(
             "{} {}  {}  {}  {}",
             if message.is_read { " " } else { "●" },
-            message.date.as_deref().unwrap_or("-"),
+            time::china_datetime(message.date.as_deref()),
             message.from.as_deref().unwrap_or("-"),
             subject,
             message.uidl

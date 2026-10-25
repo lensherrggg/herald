@@ -15,6 +15,7 @@ pub mod search;
 pub mod service;
 pub mod store;
 pub mod sync;
+pub mod time;
 pub mod tls;
 
 #[cfg(feature = "semantic")]

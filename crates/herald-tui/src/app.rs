@@ -1030,18 +1030,14 @@ pub fn format_size(bytes: u64) -> String {
 }
 
 pub fn shorten_date(date: Option<&str>) -> String {
-    let Some(date) = date else {
-        return "-".to_string();
-    };
-    let date = date.trim();
-    if date.len() >= 10 && date.as_bytes().get(4) == Some(&b'-') {
-        return date[..10].to_string();
-    }
-    if let Some((_, rest)) = date.split_once(", ") {
-        return rest.chars().take(11).collect();
-    }
-    date.chars().take(16).collect()
+    herald_core::time::china_date(date)
 }
+
+/// Long address lists would otherwise push the body far down the detail pane;
+/// the raw view is still available for the complete headers.
+pub const DETAIL_ADDR_LIMIT: usize = 12;
+/// Keep per-frame rendering and scrolling responsive for very large bodies.
+pub const DETAIL_BODY_LIMIT: usize = 32 * 1024;
 
 pub fn sender_short(from: Option<&str>) -> String {
     let Some(from) = from else {
@@ -1062,21 +1058,43 @@ pub fn sender_short(from: Option<&str>) -> String {
 
 pub fn join_addrs(addrs: &[String]) -> String {
     if addrs.is_empty() {
-        "-".to_string()
-    } else {
-        addrs.join(", ")
+        return "-".to_string();
     }
+    if addrs.len() <= DETAIL_ADDR_LIMIT {
+        return addrs.join(", ");
+    }
+    format!(
+        "{} …（共 {} 个）",
+        addrs[..DETAIL_ADDR_LIMIT].join(", "),
+        addrs.len()
+    )
 }
 
 pub fn body_text(detail: &MessageDetail) -> String {
     if !detail.body_cached {
         return "（正文未缓存，按 Enter 从服务器加载）".to_string();
     }
-    match (&detail.body_text, &detail.body_html) {
+    let text = match (&detail.body_text, &detail.body_html) {
         (Some(text), _) if !text.trim().is_empty() => text.clone(),
         (_, Some(html)) if !html.trim().is_empty() => format!("[HTML 正文]\n{html}"),
-        _ => "(没有可显示的正文)".to_string(),
+        _ => return "(没有可显示的正文)".to_string(),
+    };
+    truncate_body(text)
+}
+
+fn truncate_body(text: String) -> String {
+    if text.len() <= DETAIL_BODY_LIMIT {
+        return text;
     }
+    let mut end = DETAIL_BODY_LIMIT;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "[正文过长，仅显示前 {} KB；按 r 查看原始邮件（最多 256KB）]\n\n{}",
+        DETAIL_BODY_LIMIT / 1024,
+        &text[..end]
+    )
 }
 
 pub fn attachment_line(meta: &AttachmentMeta) -> String {
@@ -1146,10 +1164,54 @@ mod tests {
         assert_eq!(format_size(2048), "2.0 KB");
         assert_eq!(
             shorten_date(Some("Tue, 03 Sep 2024 10:00:00 +0800")),
-            "03 Sep 2024"
+            "2024-09-03"
         );
         assert_eq!(shorten_date(Some("2024-09-03T10:00:00Z")), "2024-09-03");
+        assert_eq!(shorten_date(Some("2024-09-03T20:00:00Z")), "2024-09-04");
         assert_eq!(sender_short(Some("张三 <a@b.c>")), "张三");
+    }
+
+    #[test]
+    fn long_address_lists_are_summarized() {
+        let addrs: Vec<String> = (0..20)
+            .map(|index| format!("user{index}@example.com"))
+            .collect();
+        let joined = join_addrs(&addrs);
+        assert!(joined.contains("user11@example.com"), "{joined}");
+        assert!(!joined.contains("user12@example.com"), "{joined}");
+        assert!(joined.contains("共 20 个"), "{joined}");
+        assert_eq!(
+            join_addrs(&addrs[..2]),
+            "user0@example.com, user1@example.com"
+        );
+    }
+
+    #[test]
+    fn long_bodies_are_truncated_with_a_hint() {
+        let detail = MessageDetail {
+            header: herald_core::model::MessageHeader {
+                uidl: "u1".to_string(),
+                message_id: None,
+                from: None,
+                to: vec![],
+                cc: vec![],
+                subject: Some("s".to_string()),
+                date: None,
+                size: 1,
+            },
+            body_text: Some("正文".repeat(DETAIL_BODY_LIMIT)),
+            body_html: None,
+            body_cached: true,
+            attachments: vec![],
+            is_read: false,
+        };
+        let shown = body_text(&detail);
+        assert!(
+            shown.contains("正文过长"),
+            "{}",
+            &shown[shown.len() - 120..]
+        );
+        assert!(shown.len() < DETAIL_BODY_LIMIT + 200);
     }
 
     #[test]

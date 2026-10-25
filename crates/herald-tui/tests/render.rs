@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use herald_core::mock_pop3::{MockConfig, MockMessage, MockPop3Server};
-use herald_core::model::{SearchField, SearchKind, SyncOptions};
+use herald_core::model::{MessageDetail, MessageHeader, SearchField, SearchKind, SyncOptions};
 use herald_core::Herald;
 use herald_tui::app::{App, Focus};
 use herald_tui::ui;
@@ -485,4 +485,43 @@ fn demo_config_opens_without_accounts() {
     let screen = compact(&render(&app, 120, 40));
     assert!(screen.contains("共25封"), "{screen}");
     assert!(screen.contains("未读25"), "{screen}");
+}
+
+#[test]
+fn wraps_long_addresses_and_body_and_shows_china_time() {
+    let (mut app, _dir) = synced_app(20, vec![message_one()]);
+    let recipients: Vec<String> = (0..40)
+        .map(|index| format!("user{index}@example.com"))
+        .collect();
+    let token = "A".repeat(200);
+    app.detail = Some(MessageDetail {
+        header: MessageHeader {
+            uidl: "m1".to_string(),
+            message_id: None,
+            from: Some("sender@example.com".to_string()),
+            to: recipients,
+            cc: vec![],
+            subject: Some("长内容测试".to_string()),
+            date: Some("2024-09-03T20:00:00Z".to_string()),
+            size: 200,
+        },
+        body_text: Some(token),
+        body_html: None,
+        body_cached: true,
+        attachments: vec![],
+        is_read: false,
+    });
+    app.focus = Focus::Detail;
+    let screen = compact(&render(&app, 40, 40));
+
+    assert!(screen.contains("2024-09-0404:00:00"), "{screen}");
+    assert!(screen.contains("UTC+8"), "{screen}");
+    assert!(screen.contains("user11@example.com"), "{screen}");
+    assert!(!screen.contains("user12@example.com"), "{screen}");
+    assert!(screen.contains("共40个"), "{screen}");
+    assert_eq!(
+        screen.matches('A').count(),
+        200,
+        "long unbroken body tokens must wrap, not truncate:\n{screen}"
+    );
 }

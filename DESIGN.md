@@ -56,6 +56,7 @@ Herald 解决的是「让 Agent 稳定、受控、低 token 地读内网 POP3 �
 | `store` | 事务/迁移、UIDL 去重、正文缓存、FTS、向量表、附件 BLOB、本地状态 |
 | `search` | jieba 分词、FTS 查询构造、LIKE 兜底转义 |
 | `sync` | UIDL 差集、邮件处理、错误隔离、embedding 文本生成 |
+| `time` | 将存储的 RFC 3339 时间统一换算成北京时间（UTC+8）供 CLI/TUI 展示 |
 | `service` | `Herald` 门面：打开实例、账户选择、读路径、附件导出、模型入口 |
 | `semantic` | 从模型目录/Tokenizer 目录分别加载本地 ONNX、批量 embedding、归一化、按需写入 |
 | `models` | HF/mirror 下载、模型与 tokenizer 分目录落盘、原子写入、文件校验、目录保护 |
@@ -321,6 +322,8 @@ App
 - `preview_selected()` 只用 `get_stored_message` 读本地 SQLite（头部、已缓存正文、附件元数据），移动选择不产生网络请求；正文未缓存时显示提示，按 `Enter` 才 RETR。
 - 搜索框 `Tab` 循环检索模式，`Ctrl+F` 循环字段；字段非 `all` 时强制关键词模式，与服务层规则一致。每页条数取自 `[ui] page_size`。
 - 列表行首 `●` 表示未读；`u` 直接切换本地已读状态并刷新未读计数。`Enter` 成功加载详情后自动置读。
+- 时间统一按 UTC+8 展示（`time` 模块）：列表显示日期，详情显示到秒，顶栏同步时间显示到分钟；JSON/MCP 保留原始 RFC 3339。
+- 详情区使用 `Paragraph` 自动换行（含超长无空格 token）。收件人/抄送超过 12 个折叠为“前 12 个 …（共 N 个）”；正文超过 32KB 时顶部提示并只渲染前 32KB，完整原文走 `r` 视图。
 - 宽终端（≥90 列）左右分栏；窄终端一次只显示焦点面板；极小终端显示尺寸提示。
 - 底部栏按模式/焦点给出短提示，完整快捷键放在 `h` 帮助页；窄终端进一步精简。
 - `NO_COLOR` 或 `TERM=dumb` 时用粗体/反色代替颜色。
