@@ -184,6 +184,8 @@ HF_ENDPOINT=https://hf-mirror.example ./target/release/herald models download
 ./target/release/herald export-attachment <uidl> 0 ./exports
 ```
 
+`sync` 默认只处理最近 `sync.default_limit` 封**新**邮件（便携配置是 50），取不完时 TUI 会提示按 `S`；`--all` 和 `S` 会处理服务器上全部未知 UIDL。因此连续两次普通同步可能各拉 50 封，合计 100 封，这不是重复入库。
+
 全局参数：`--config <path>`、`--json`（所有命令均可脚本化读取）。
 
 `search` 默认 `--mode auto`：`semantic.enabled` 打开且模型文件齐全时使用混合检索，否则用关键词。混合检索把关键词（bm25）与语义（向量距离）两路结果按名次做 RRF 融合（`1/(60+名次)`，按 UIDL 去重），不需要校准两种分数量纲；语义不可用时自动降级为关键词，并在命令行 stderr 或 TUI 状态栏明确提示。

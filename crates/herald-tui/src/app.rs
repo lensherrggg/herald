@@ -492,8 +492,10 @@ impl App {
         };
         match self.runtime.block_on(self.herald.sync(options)) {
             Ok(report) => {
+                let hint =
+                    sync_limit_hint(all, report.fetched, self.herald.config.sync.default_limit);
                 self.status = StatusMessage::info(format!(
-                    "同步完成：新邮件 {} 封，处理 {} 封，正文缓存 {} 封{}",
+                    "同步完成：新邮件 {} 封，处理 {} 封，正文缓存 {} 封{}{hint}",
                     report.new_count,
                     report.fetched,
                     report.bodies_cached,
@@ -1718,6 +1720,14 @@ fn page_count_for(total: usize, page_size: usize) -> usize {
     }
 }
 
+fn sync_limit_hint(all: bool, fetched: usize, limit: usize) -> String {
+    if !all && limit > 0 && fetched >= limit {
+        format!("（已达单次上限 {limit} 封，按 S 同步全部新邮件）")
+    } else {
+        String::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1940,5 +1950,14 @@ mod tests {
         assert!(pieces[0].contains("第 01 段："), "{}", pieces[0]);
         assert_eq!(pieces.concat(), text);
         assert_eq!(wrap_line("", 20), vec![String::new()]);
+    }
+
+    #[test]
+    fn sync_hint_only_appears_when_the_limit_was_hit() {
+        assert!(sync_limit_hint(true, 50, 50).is_empty());
+        assert!(sync_limit_hint(false, 49, 50).is_empty());
+        let hint = sync_limit_hint(false, 50, 50);
+        assert!(hint.contains("50"), "{hint}");
+        assert!(hint.contains('S'), "{hint}");
     }
 }
