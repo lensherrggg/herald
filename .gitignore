@@ -1,5 +1,6 @@
 # Build output
 /target
+/dist
 **/*.rs.bk
 
 # Requirement document stays out of version control (explicitly requested)
