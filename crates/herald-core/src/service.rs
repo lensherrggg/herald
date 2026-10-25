@@ -46,7 +46,11 @@ impl Herald {
             store.ensure_account(account)?;
         }
         #[cfg(feature = "semantic")]
-        let semantic = SemanticService::new(&config, paths.models_dir.clone());
+        let semantic = SemanticService::new(
+            &config,
+            paths.models_dir.clone(),
+            paths.tokenizer_dir.clone(),
+        );
         let herald = Self {
             config,
             paths,
@@ -383,6 +387,15 @@ impl Herald {
 
     pub fn model_dir(&self) -> &Path {
         &self.paths.models_dir
+    }
+
+    pub fn tokenizer_dir(&self) -> &Path {
+        &self.paths.tokenizer_dir
+    }
+
+    #[cfg(feature = "semantic")]
+    pub fn semantic_model_present(&self) -> bool {
+        self.semantic.model_files_present()
     }
 }
 

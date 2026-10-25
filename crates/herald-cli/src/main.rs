@@ -325,7 +325,8 @@ async fn run() -> anyhow::Result<()> {
                 print_json(&report)?;
             } else {
                 println!("模型：{}", report.model);
-                println!("目录：{}", report.dest.display());
+                println!("模型目录：{}", report.dest.display());
+                println!("Tokenizer 目录：{}", report.tokenizer_dest.display());
                 println!("下载源：{}", report.mirror);
                 for file in &report.files {
                     println!(

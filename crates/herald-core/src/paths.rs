@@ -21,6 +21,7 @@ pub struct ResolvedPaths {
     pub config_dir: PathBuf,
     pub database_path: PathBuf,
     pub models_dir: PathBuf,
+    pub tokenizer_dir: PathBuf,
     pub portable: bool,
     pub fallback_reason: Option<String>,
 }
@@ -95,11 +96,16 @@ impl PathLayout {
                 .join("models")
                 .join(&config.semantic.model_name),
         };
+        let tokenizer_dir = match &config.semantic.tokenizer_path {
+            Some(path) => crate::config::resolve_relative(&self.config_dir, path),
+            None => models_dir.clone(),
+        };
         ResolvedPaths {
             config_path: self.config_path.clone(),
             config_dir: self.config_dir.clone(),
             database_path,
             models_dir,
+            tokenizer_dir,
             portable: self.portable,
             fallback_reason: self.fallback_reason.clone(),
         }
@@ -112,6 +118,7 @@ impl ResolvedPaths {
             format!("配置文件：{}", self.config_path.display()),
             format!("数据库：{}", self.database_path.display()),
             format!("模型目录：{}", self.models_dir.display()),
+            format!("Tokenizer 目录：{}", self.tokenizer_dir.display()),
             format!(
                 "存放模式：{}",
                 if self.portable {
@@ -211,16 +218,18 @@ mod tests {
                 .join("models")
                 .join(crate::config::DEFAULT_MODEL_NAME)
         );
+        assert_eq!(paths.tokenizer_dir, paths.models_dir);
     }
 
     #[test]
-    fn configured_database_and_model_paths_are_relative_to_config_dir() {
+    fn configured_database_model_and_tokenizer_paths_are_relative_to_config_dir() {
         let temp = tempfile::tempdir().unwrap();
         let cfg = Config::from_toml(
             r#"
 database = "state/mail.db"
 [semantic]
 model_path = "weights/zh"
+tokenizer_path = "tokenizers/zh"
 "#,
         )
         .unwrap();
@@ -229,6 +238,7 @@ model_path = "weights/zh"
             .complete(&cfg);
         assert_eq!(paths.database_path, temp.path().join("state/mail.db"));
         assert_eq!(paths.models_dir, temp.path().join("weights/zh"));
+        assert_eq!(paths.tokenizer_dir, temp.path().join("tokenizers/zh"));
     }
 
     #[test]
@@ -238,6 +248,7 @@ model_path = "weights/zh"
             config_dir: PathBuf::from("c"),
             database_path: PathBuf::from("d"),
             models_dir: PathBuf::from("m"),
+            tokenizer_dir: PathBuf::from("t"),
             portable: false,
             fallback_reason: Some("because".into()),
         };

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use herald_core::config::Config;
 use herald_core::models::{self, DownloadOptions};
-use herald_core::paths::ResolvedPaths;
+use herald_core::paths::{PathLayout, ResolvedPaths};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -71,6 +71,7 @@ fn paths(dir: &std::path::Path) -> ResolvedPaths {
         config_dir: dir.to_path_buf(),
         database_path: dir.join("herald.db"),
         models_dir: dir.join("models"),
+        tokenizer_dir: dir.join("models"),
         portable: true,
         fallback_reason: None,
     }
@@ -94,6 +95,8 @@ async fn downloads_every_file_from_mirror_and_skips_on_second_run() {
     .await
     .expect("download");
     assert_eq!(report.model, "bge-small-zh-v1.5");
+    assert_eq!(report.dest, paths.models_dir);
+    assert_eq!(report.tokenizer_dest, paths.models_dir);
     assert_eq!(report.files.len(), 5);
     assert!(report.files.iter().all(|file| !file.skipped));
     assert_eq!(
@@ -113,6 +116,53 @@ async fn downloads_every_file_from_mirror_and_skips_on_second_run() {
     .await
     .expect("second download");
     assert!(again.files.iter().all(|file| file.skipped));
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn downloads_tokenizer_files_into_configured_directory() {
+    let (mirror, server) = mirror().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = Config::from_toml(
+        r#"
+[semantic]
+model_path = "weights"
+tokenizer_path = "tokenizer"
+"#,
+    )
+    .expect("config");
+    let paths = PathLayout::resolve_from_exe_dir(dir.path())
+        .unwrap()
+        .complete(&config);
+
+    let report = models::download(
+        &config,
+        &paths,
+        &DownloadOptions {
+            mirror: Some(mirror),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("download");
+    assert_eq!(report.dest, paths.models_dir);
+    assert_eq!(report.tokenizer_dest, paths.tokenizer_dir);
+    assert_eq!(
+        std::fs::read(paths.models_dir.join("model.onnx")).unwrap(),
+        b"fake-onnx"
+    );
+    for name in ["tokenizer.json", "config.json", "special_tokens_map.json"] {
+        assert!(
+            paths.tokenizer_dir.join(name).is_file(),
+            "missing tokenizer file {name}"
+        );
+        assert!(
+            !paths.models_dir.join(name).exists(),
+            "{name} must not land in the model directory"
+        );
+    }
+    assert!(paths.tokenizer_dir.join("tokenizer_config.json").is_file());
 
     server.abort();
 }

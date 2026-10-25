@@ -8,7 +8,7 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::error::{HeraldError, Result};
 use crate::paths::ResolvedPaths;
-use crate::semantic::MODEL_FILES;
+use crate::semantic::{MODEL_FILE, TOKENIZER_FILES};
 
 pub const DEFAULT_MIRROR: &str = "https://huggingface.co";
 pub const DEFAULT_REPO: &str = "BAAI";
@@ -32,6 +32,7 @@ pub struct DownloadedFile {
 pub struct DownloadReport {
     pub model: String,
     pub dest: PathBuf,
+    pub tokenizer_dest: PathBuf,
     pub mirror: String,
     pub files: Vec<DownloadedFile>,
 }
@@ -48,12 +49,15 @@ pub async fn download(
     if model.trim().is_empty() || model.contains("..") {
         return Err(HeraldError::invalid("模型名称非法"));
     }
-    let dest = resolve_dest(config, paths, options, &model);
+    let (dest, tokenizer_dest) = resolve_dests(config, paths, options, &model);
     let mirror = resolve_mirror(options.mirror.as_deref());
     if !mirror.starts_with("http://") && !mirror.starts_with("https://") {
         return Err(HeraldError::invalid("下载源必须是 http(s) URL"));
     }
     ensure_target_dir(&dest, options.force)?;
+    if tokenizer_dest != dest {
+        ensure_target_dir(&tokenizer_dest, options.force)?;
+    }
 
     let client = reqwest::Client::builder()
         .user_agent(concat!("herald/", env!("CARGO_PKG_VERSION")))
@@ -61,9 +65,17 @@ pub async fn download(
         .build()
         .map_err(|err| HeraldError::Http(format!("创建 HTTP 客户端失败：{err}")))?;
 
+    let targets: Vec<(&str, &Path)> = std::iter::once((MODEL_FILE, dest.as_path()))
+        .chain(
+            TOKENIZER_FILES
+                .iter()
+                .map(|name| (*name, tokenizer_dest.as_path())),
+        )
+        .collect();
+
     let mut files = Vec::new();
-    for name in MODEL_FILES {
-        let target = dest.join(name);
+    for (name, dir) in &targets {
+        let target = dir.join(name);
         if !options.force && target.metadata().map(|m| m.len() > 0).unwrap_or(false) {
             files.push(DownloadedFile {
                 name: name.to_string(),
@@ -80,8 +92,8 @@ pub async fn download(
         });
     }
 
-    for name in MODEL_FILES {
-        let path = dest.join(name);
+    for (name, dir) in &targets {
+        let path = dir.join(name);
         if !path
             .metadata()
             .map(|m| m.is_file() && m.len() > 0)
@@ -97,24 +109,26 @@ pub async fn download(
     Ok(DownloadReport {
         model,
         dest,
+        tokenizer_dest,
         mirror,
         files,
     })
 }
 
-fn resolve_dest(
+fn resolve_dests(
     config: &Config,
     paths: &ResolvedPaths,
     options: &DownloadOptions,
     model: &str,
-) -> PathBuf {
+) -> (PathBuf, PathBuf) {
     if let Some(dest) = &options.dest {
-        return dest.clone();
+        return (dest.clone(), dest.clone());
     }
     if model == config.semantic.model_name {
-        paths.models_dir.clone()
+        (paths.models_dir.clone(), paths.tokenizer_dir.clone())
     } else {
-        paths.config_dir.join("models").join(model)
+        let dest = paths.config_dir.join("models").join(model);
+        (dest.clone(), dest)
     }
 }
 
@@ -153,7 +167,7 @@ pub fn model_url(mirror: &str, model: &str, remote_path: &str) -> String {
 
 fn remote_candidates(name: &str) -> Vec<&str> {
     match name {
-        "model.onnx" => vec!["onnx/model.onnx", "model.onnx"],
+        MODEL_FILE => vec!["onnx/model.onnx", MODEL_FILE],
         _ => vec![name],
     }
 }
@@ -167,7 +181,9 @@ fn ensure_target_dir(dest: &Path, force: bool) -> Result<()> {
     }
     if dest.is_dir() {
         let entries: Vec<_> = std::fs::read_dir(dest)?.filter_map(|e| e.ok()).collect();
-        let looks_like_model = MODEL_FILES.iter().any(|name| dest.join(name).exists());
+        let looks_like_model = std::iter::once(MODEL_FILE)
+            .chain(TOKENIZER_FILES)
+            .any(|name| dest.join(name).exists());
         if !entries.is_empty() && !looks_like_model && !force {
             return Err(HeraldError::invalid(format!(
                 "目标目录非空且不像模型目录：{}（如确认请加 --force）",
@@ -287,5 +303,41 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         assert!(ensure_target_dir(temp.path(), false).is_ok());
         assert!(ensure_target_dir(&temp.path().join("nested"), false).is_ok());
+    }
+
+    #[test]
+    fn resolves_split_destinations_and_keeps_explicit_dest_together() {
+        let config = Config::default();
+        let paths = ResolvedPaths {
+            config_path: PathBuf::from("c/herald.toml"),
+            config_dir: PathBuf::from("c"),
+            database_path: PathBuf::from("c/herald.db"),
+            models_dir: PathBuf::from("m"),
+            tokenizer_dir: PathBuf::from("t"),
+            portable: true,
+            fallback_reason: None,
+        };
+
+        let (model, tokenizer) = resolve_dests(
+            &config,
+            &paths,
+            &DownloadOptions::default(),
+            &config.semantic.model_name,
+        );
+        assert_eq!(model, PathBuf::from("m"));
+        assert_eq!(tokenizer, PathBuf::from("t"));
+
+        let explicit = PathBuf::from("explicit");
+        let (model, tokenizer) = resolve_dests(
+            &config,
+            &paths,
+            &DownloadOptions {
+                dest: Some(explicit.clone()),
+                ..Default::default()
+            },
+            &config.semantic.model_name,
+        );
+        assert_eq!(model, explicit);
+        assert_eq!(tokenizer, explicit);
     }
 }

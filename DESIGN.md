@@ -56,8 +56,8 @@ Herald 解决的是「让 Agent 稳定、受控、低 token 地读内网 POP3 �
 | `search` | jieba 分词、FTS 查询构造、LIKE 兜底转义 |
 | `sync` | UIDL 差集、邮件处理、错误隔离、embedding 文本生成 |
 | `service` | `Herald` 门面：打开实例、账户选择、读路径、附件导出、模型入口 |
-| `semantic` | fastembed 本地 ONNX 加载、批量 embedding、归一化、按需写入 |
-| `models` | HF/mirror 下载、原子落盘、文件校验、目录保护 |
+| `semantic` | 从模型目录/Tokenizer 目录分别加载本地 ONNX、批量 embedding、归一化、按需写入 |
+| `models` | HF/mirror 下载、模型与 tokenizer 分目录落盘、原子写入、文件校验、目录保护 |
 | `mock_pop3` | 仅 `test-support`：plain/STLS/TLS mock server |
 
 ### 2.2 入口层
@@ -84,9 +84,10 @@ PathLayout::resolve(--config?)
 然后：
 
 1. `Config::load` 读取并校验 TOML。
-2. `PathLayout::complete` 得出 `database_path`、`models_dir`：
+2. `PathLayout::complete` 得出 `database_path`、`models_dir`、`tokenizer_dir`：
    - `database` 相对路径按**配置文件目录**解析；
-   - `semantic.model_path` 同样相对配置文件目录，缺省为 `models/<model_name>`。
+   - `semantic.model_path` 同样相对配置文件目录，缺省为 `models/<model_name>`；
+   - `semantic.tokenizer_path` 缺省复用 `models_dir`，配置后单独解析，实现目录级拆分。
 3. `Store::open` 建库/迁移。
 4. 把所有配置账户 `ensure_account` 注册进数据库（因此从未同步也能 `accounts`）。
 5. 打印实际生效路径、存放模式与降级原因。
@@ -219,6 +220,7 @@ sync(options)
 ### 8.2 语义
 
 - 模型：`bge-small-zh-v1.5`，CLS pooling，最大长度 512，输出 512 维，手动 L2 归一化。
+- 目录：`model.onnx` 从 `semantic.model_path` 读取；`tokenizer.json` 等 4 个文件从 `semantic.tokenizer_path` 读取，缺省时两者为同一目录。
 - 文本：主题 + 发件人显示名 +（若已缓存）正文。
 - 同步时：
   - 默认只缓存头部时生成主题级向量；
@@ -235,20 +237,25 @@ sync(options)
 ```text
 download(options)
   model ← --model / semantic.model_name
-  dest  ← --dest / semantic.model_path / models/<model>
+  (dest, tokenizer_dest) ←
+      --dest ? (dest, dest)                       # 显式覆盖时全部放同一目录
+      model == model_name ? (models_dir, tokenizer_dir)
+                          : (config_dir/models/<model>, 同上)
   mirror← --mirror / HF_ENDPOINT / https://huggingface.co
   校验 model 名称（非空、不含 ".."）与 mirror 协议（http/https）
-  校验 dest：不是文件；非空目录必须“看起来像模型目录”或 --force；写入探针
-  for file in 清单:
+  校验两个目标目录：不是文件；非空目录必须包含已知模型/Tokenizer 文件或 --force；
+                    分别做写入探针
+  for (file, dir) in model.onnx→dest + 4 个 tokenizer 文件→tokenizer_dest:
      已存在且非空且未 --force → skip
      依次尝试候选远程路径（model.onnx 先试 onnx/model.onnx）
      流式写入 *.part → 成功后 rename → 失败删除 *.part
-  最终复核 5 个文件都存在且非空
+  最终复核 5 个文件都位于各自目标目录且非空
 ```
 
 - 下载与加载解耦：`semantic.enabled = false` 不影响下载。
+- 拆分与合并共存：默认单目录；配置 `tokenizer_path` 后按目录拆分；`--dest` 显式要求合并下载。
 - 原子性：`.part` 临时文件避免半截模型被当作可用。
-- 可观测：每个文件记录 URL/大小；报告含 skip 状态。
+- 可观测：每个文件记录 URL/大小；报告同时给出 `dest` 与 `tokenizer_dest`，以及 skip 状态。
 
 ---
 

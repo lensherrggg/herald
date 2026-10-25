@@ -23,7 +23,7 @@ Herald **不删除、不标记已读、不移动邮件，也不支持 IMAP/SMTP*
 | 按需正文 | 首次查看时 RETR 并缓存，之后离线读取 |
 | 附件 | 元数据默认同步；内容按需拉取并存入 SQLite BLOB，默认不落盘 |
 | 关键词搜索 | jieba + FTS5，FTS 无结果时回退 LIKE，适合中文子串 |
-| 语义搜索 | 本地 `bge-small-zh-v1.5`（512 维），仅供 CLI/TUI |
+| 语义搜索 | 本地 `bge-small-zh-v1.5`（512 维），模型与 tokenizer 目录可分开配置，仅供 CLI/TUI |
 | MCP | 7 个只读工具，列表默认 20 / 最大 100，正文 32KB 截断，原文 256KB 上限 |
 | TUI | 账户切换、同步、分页排序、详情、搜索、原文、附件导出 |
 
@@ -116,6 +116,7 @@ max_attachment_size_bytes = 52428800
 enabled = true
 model_name = "bge-small-zh-v1.5"
 # model_path = "models/bge-small-zh-v1.5"
+# tokenizer_path = "models/bge-small-zh-v1.5-tokenizer"  # 可选；缺省与模型目录相同
 ```
 
 > `password_env` 指向的环境变量不存在或为空时会直接报错，**不会回退到明文密码**。
@@ -137,7 +138,13 @@ HF_ENDPOINT=https://hf-mirror.example ./target/release/herald models download
 
 下载清单：`model.onnx`、`tokenizer.json`、`config.json`、`special_tokens_map.json`、`tokenizer_config.json`。已存在且非空的文件默认跳过。
 
-模型缺失不会阻塞同步：embedding 写入会跳过并给出一次警告；关键词检索照常可用，语义检索会返回 `MODEL_ERROR`。
+下载目录规则：
+
+- 默认把 `model.onnx` 和 4 个 tokenizer 文件放在模型目录。
+- 配置了 `semantic.tokenizer_path` 时，`model.onnx` 写入模型目录，tokenizer 文件写入该目录。
+- `--dest` 是显式覆盖，会把 5 个文件全部放进指定目录；它不会修改配置文件，需要时请自行同步 `model_path` / `tokenizer_path`。
+
+模型或 tokenizer 缺失不会阻塞同步：embedding 写入会跳过并给出一次警告；关键词检索照常可用，语义检索会返回 `MODEL_ERROR`。
 
 ### 4.3 同步与查看
 
@@ -235,6 +242,7 @@ HF_ENDPOINT=https://hf-mirror.example ./target/release/herald models download
 | 配置 | 可执行文件目录 / `herald.toml` |
 | 数据库 | 配置所在目录 / `herald.db`（可由 `database` 覆盖，相对路径按配置文件目录解析） |
 | 模型 | 配置所在目录 / `models/<model_name>/`（可由 `semantic.model_path` 覆盖） |
+| Tokenizer | 默认与模型目录相同（可由 `semantic.tokenizer_path` 单独覆盖） |
 | 上次导出目录 | 数据库内 `local_state` 表 |
 
 如果可执行文件目录不可写，Herald 自动降级到用户目录，并在启动日志中打印原因：
@@ -243,7 +251,7 @@ HF_ENDPOINT=https://hf-mirror.example ./target/release/herald models download
 - macOS：`~/Library/Application Support/herald/`
 - Windows：`%APPDATA%\herald\`
 
-`herald-tui` 的 `h` 帮助页会显示实际生效的配置/数据库/模型路径及其存放模式；CLI 启动日志同样输出这些信息。
+`herald-tui` 的 `h` 帮助页会显示实际生效的配置/数据库/模型/Tokenizer 路径及其存放模式；CLI 启动日志同样输出这些信息。
 
 ---
 
@@ -254,6 +262,7 @@ HF_ENDPOINT=https://hf-mirror.example ./target/release/herald models download
 - 多个账户且没有 `default_account` 时，必须显式传 `account`。
 - `sync.default_limit > 0`；`auto_body_max_size = 0` 表示不限。
 - `semantic.enabled = false` 时 CLI/TUI 不加载模型；`models download` 仍可独立执行。
+- `semantic.model_path` / `semantic.tokenizer_path` 的相对路径均按配置文件所在目录解析；`tokenizer_path` 缺省时复用模型目录。
 - 单附件大小上限默认 50MB，超限内容不写入 BLOB。
 
 ---

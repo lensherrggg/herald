@@ -828,16 +828,7 @@ impl App {
     }
 
     pub fn semantic_model_present(&self) -> bool {
-        const FILES: [&str; 5] = [
-            "model.onnx",
-            "tokenizer.json",
-            "config.json",
-            "special_tokens_map.json",
-            "tokenizer_config.json",
-        ];
-        FILES
-            .iter()
-            .all(|name| self.herald.paths.models_dir.join(name).is_file())
+        self.herald.semantic_model_present()
     }
 
     pub fn status_text(&self) -> String {

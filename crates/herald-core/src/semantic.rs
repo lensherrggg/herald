@@ -10,8 +10,8 @@ use crate::model::SearchResult;
 use crate::store::{Store, EMBEDDING_DIM};
 use crate::sync::EmbeddingJob;
 
-pub const MODEL_FILES: [&str; 5] = [
-    "model.onnx",
+pub const MODEL_FILE: &str = "model.onnx";
+pub const TOKENIZER_FILES: [&str; 4] = [
     "tokenizer.json",
     "config.json",
     "special_tokens_map.json",
@@ -21,15 +21,17 @@ pub const MODEL_FILES: [&str; 5] = [
 pub struct SemanticService {
     enabled: bool,
     model_dir: PathBuf,
+    tokenizer_dir: PathBuf,
     embedder: Option<TextEmbedding>,
     warned: bool,
 }
 
 impl SemanticService {
-    pub fn new(config: &Config, model_dir: PathBuf) -> Self {
+    pub fn new(config: &Config, model_dir: PathBuf, tokenizer_dir: PathBuf) -> Self {
         Self {
             enabled: config.semantic.enabled,
             model_dir,
+            tokenizer_dir,
             embedder: None,
             warned: false,
         }
@@ -43,10 +45,15 @@ impl SemanticService {
         &self.model_dir
     }
 
+    pub fn tokenizer_dir(&self) -> &Path {
+        &self.tokenizer_dir
+    }
+
     pub fn model_files_present(&self) -> bool {
-        MODEL_FILES
-            .iter()
-            .all(|name| file_is_present(&self.model_dir.join(name)))
+        file_is_present(&self.model_dir.join(MODEL_FILE))
+            && TOKENIZER_FILES
+                .iter()
+                .all(|name| file_is_present(&self.tokenizer_dir.join(name)))
     }
 
     fn embedder(&mut self) -> Result<&mut TextEmbedding> {
@@ -56,7 +63,7 @@ impl SemanticService {
             ));
         }
         if self.embedder.is_none() {
-            self.embedder = Some(load_model(&self.model_dir)?);
+            self.embedder = Some(load_model(&self.model_dir, &self.tokenizer_dir)?);
         }
         Ok(self.embedder.as_mut().expect("embedder was just loaded"))
     }
@@ -142,22 +149,29 @@ impl SemanticService {
     }
 }
 
-fn load_model(model_dir: &Path) -> Result<TextEmbedding> {
-    for name in MODEL_FILES {
-        let path = model_dir.join(name);
+fn load_model(model_dir: &Path, tokenizer_dir: &Path) -> Result<TextEmbedding> {
+    let model_path = model_dir.join(MODEL_FILE);
+    if !file_is_present(&model_path) {
+        return Err(HeraldError::Model(format!(
+            "模型文件缺失：{}（运行 herald models download）",
+            model_path.display()
+        )));
+    }
+    for name in TOKENIZER_FILES {
+        let path = tokenizer_dir.join(name);
         if !file_is_present(&path) {
             return Err(HeraldError::Model(format!(
-                "模型文件缺失：{}（运行 herald models download）",
+                "Tokenizer 文件缺失：{}（运行 herald models download）",
                 path.display()
             )));
         }
     }
-    let onnx = std::fs::read(model_dir.join("model.onnx"))?;
+    let onnx = std::fs::read(&model_path)?;
     let tokenizer_files = TokenizerFiles {
-        tokenizer_file: std::fs::read(model_dir.join("tokenizer.json"))?,
-        config_file: std::fs::read(model_dir.join("config.json"))?,
-        special_tokens_map_file: std::fs::read(model_dir.join("special_tokens_map.json"))?,
-        tokenizer_config_file: std::fs::read(model_dir.join("tokenizer_config.json"))?,
+        tokenizer_file: std::fs::read(tokenizer_dir.join("tokenizer.json"))?,
+        config_file: std::fs::read(tokenizer_dir.join("config.json"))?,
+        special_tokens_map_file: std::fs::read(tokenizer_dir.join("special_tokens_map.json"))?,
+        tokenizer_config_file: std::fs::read(tokenizer_dir.join("tokenizer_config.json"))?,
     };
     let model = UserDefinedEmbeddingModel::new(onnx, tokenizer_files).with_pooling(Pooling::Cls);
     let options = InitOptionsUserDefined::new().with_max_length(512);
@@ -193,10 +207,32 @@ mod tests {
     #[test]
     fn missing_model_is_reported() {
         let temp = tempfile::tempdir().unwrap();
-        let err = match load_model(temp.path()) {
+        let err = match load_model(temp.path(), temp.path()) {
             Err(err) => err,
             Ok(_) => panic!("expected a missing model error"),
         };
         assert!(matches!(err, HeraldError::Model(_)));
+    }
+
+    #[test]
+    fn model_and_tokenizer_can_live_in_separate_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let model_dir = temp.path().join("model");
+        let tokenizer_dir = temp.path().join("tokenizer");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::create_dir_all(&tokenizer_dir).unwrap();
+        std::fs::write(model_dir.join(MODEL_FILE), b"x").unwrap();
+        for name in TOKENIZER_FILES {
+            std::fs::write(tokenizer_dir.join(name), b"x").unwrap();
+        }
+
+        let service =
+            SemanticService::new(&Config::default(), model_dir.clone(), tokenizer_dir.clone());
+        assert!(service.model_files_present());
+        assert_eq!(service.model_dir(), model_dir);
+        assert_eq!(service.tokenizer_dir(), tokenizer_dir);
+
+        std::fs::remove_file(tokenizer_dir.join("tokenizer.json")).unwrap();
+        assert!(!service.model_files_present());
     }
 }

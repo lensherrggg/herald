@@ -135,6 +135,10 @@ pub struct SemanticConfig {
     pub model_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_path: Option<String>,
+    /// Directory holding tokenizer.json and its companion files. Defaults to
+    /// the model directory so split and single-directory layouts both work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokenizer_path: Option<String>,
 }
 
 impl Default for SemanticConfig {
@@ -143,6 +147,7 @@ impl Default for SemanticConfig {
             enabled: true,
             model_name: default_model_name(),
             model_path: None,
+            tokenizer_path: None,
         }
     }
 }
@@ -319,6 +324,7 @@ max_attachment_size_bytes = 52428800
 enabled = true
 model_name = "bge-small-zh-v1.5"
 # model_path = "models/bge-small-zh-v1.5"
+# tokenizer_path = "models/bge-small-zh-v1.5-tokenizer"  # 缺省与 model_path 相同
 "#
         .to_string()
     }
