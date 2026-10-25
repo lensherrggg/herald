@@ -110,12 +110,21 @@ impl Default for SyncConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachmentsConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub export_dir: Option<String>,
     #[serde(default = "default_attachment_limit")]
     pub max_attachment_size_bytes: u64,
+}
+
+impl Default for AttachmentsConfig {
+    fn default() -> Self {
+        Self {
+            export_dir: None,
+            max_attachment_size_bytes: default_attachment_limit(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

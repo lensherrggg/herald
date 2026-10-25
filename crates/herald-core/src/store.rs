@@ -576,7 +576,7 @@ impl Store {
             r#"
             SELECT COUNT(*) FROM messages_fts f
             JOIN messages m ON m.id = f.rowid
-            WHERE messages_fts MATCH ?1 AND m.account_id = ?2
+            WHERE f MATCH ?1 AND m.account_id = ?2
             "#,
             params![fts_query, account_id],
             |row| row.get(0),
@@ -586,8 +586,8 @@ impl Store {
             SELECT m.uidl, m.subject, m.from_addr, m.date, COALESCE(m.size, 0)
             FROM messages_fts f
             JOIN messages m ON m.id = f.rowid
-            WHERE messages_fts MATCH ?1 AND m.account_id = ?2
-            ORDER BY bm25(messages_fts), m.date DESC
+            WHERE f MATCH ?1 AND m.account_id = ?2
+            ORDER BY bm25(f), m.date DESC
             LIMIT ?3 OFFSET ?4
             "#,
         )?;

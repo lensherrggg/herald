@@ -213,12 +213,16 @@ async fn serve_connection(
 
         match command.as_str() {
             "CAPA" => {
-                let mut lines = vec!["IMPLEMENTATION Herald-Mock".to_string(), "UIDL".to_string(), "USER".to_string()];
+                let mut lines: Vec<Vec<u8>> = vec![
+                    b"IMPLEMENTATION Herald-Mock".to_vec(),
+                    b"UIDL".to_vec(),
+                    b"USER".to_vec(),
+                ];
                 if config.support_top {
-                    lines.push("TOP".to_string());
+                    lines.push(b"TOP".to_vec());
                 }
                 if config.mode == Security::Stls && !tls_active {
-                    lines.push("STLS".to_string());
+                    lines.push(b"STLS".to_vec());
                 }
                 write_line(stream.as_mut().unwrap(), "+OK Capability list follows").await?;
                 write_multiline(stream.as_mut().unwrap(), &lines).await?;
@@ -276,23 +280,25 @@ async fn serve_connection(
                         .await?;
                     }
                     "LIST" => {
-                        let lines: Vec<String> = config
+                        let lines: Vec<Vec<u8>> = config
                             .messages
                             .iter()
                             .enumerate()
                             .map(|(index, message)| {
-                                format!("{} {}", index + 1, message.raw.len())
+                                format!("{} {}", index + 1, message.raw.len()).into_bytes()
                             })
                             .collect();
                         write_line(stream.as_mut().unwrap(), "+OK scan listing follows").await?;
                         write_multiline(stream.as_mut().unwrap(), &lines).await?;
                     }
                     "UIDL" => {
-                        let lines: Vec<String> = config
+                        let lines: Vec<Vec<u8>> = config
                             .messages
                             .iter()
                             .enumerate()
-                            .map(|(index, message)| format!("{} {}", index + 1, message.uidl))
+                            .map(|(index, message)| {
+                                format!("{} {}", index + 1, message.uidl).into_bytes()
+                            })
                             .collect();
                         write_line(stream.as_mut().unwrap(), "+OK unique-id listing follows")
                             .await?;
@@ -348,12 +354,12 @@ async fn write_line(stream: &mut MockStream, line: &str) -> io::Result<()> {
     stream.flush().await
 }
 
-async fn write_multiline(stream: &mut MockStream, lines: &[String]) -> io::Result<()> {
+async fn write_multiline(stream: &mut MockStream, lines: &[Vec<u8>]) -> io::Result<()> {
     for line in lines {
-        if line.starts_with('.') {
+        if line.first() == Some(&b'.') {
             stream.write_all(b".").await?;
         }
-        stream.write_all(line.as_bytes()).await?;
+        stream.write_all(line).await?;
         stream.write_all(b"\r\n").await?;
     }
     stream.write_all(b".\r\n").await?;
@@ -386,12 +392,9 @@ async fn read_line(stream: &mut MockStream, buffer: &mut Vec<u8>) -> io::Result<
     }
 }
 
-fn split_lines(raw: &[u8]) -> Vec<String> {
+fn split_lines(raw: &[u8]) -> Vec<Vec<u8>> {
     raw.split(|&byte| byte == b'\n')
-        .map(|line| {
-            let line = line.strip_suffix(b"\r").unwrap_or(line);
-            String::from_utf8_lossy(line).to_string()
-        })
+        .map(|line| line.strip_suffix(b"\r").unwrap_or(line).to_vec())
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
@@ -402,7 +405,7 @@ fn split_lines(raw: &[u8]) -> Vec<String> {
         .collect()
 }
 
-fn top_lines(raw: &[u8], body_lines: usize) -> Vec<String> {
+fn top_lines(raw: &[u8], body_lines: usize) -> Vec<Vec<u8>> {
     let lines = split_lines(raw);
     let blank = lines.iter().position(|line| line.is_empty());
     match blank {
@@ -425,13 +428,21 @@ mod tests {
         let lines = top_lines(raw, 1);
         assert_eq!(
             lines,
-            vec!["Subject: x", "To: y", "", "line1"],
+            vec![
+                b"Subject: x".to_vec(),
+                b"To: y".to_vec(),
+                b"".to_vec(),
+                b"line1".to_vec()
+            ],
             "TOP must keep the header/body blank line"
         );
     }
 
     #[test]
     fn split_lines_trims_trailing_blank_lines() {
-        assert_eq!(split_lines(b"a\nb\n\n"), vec!["a", "b"]);
+        assert_eq!(
+            split_lines("a\nb\n\n".as_bytes()),
+            vec![b"a".to_vec(), b"b".to_vec()]
+        );
     }
 }
