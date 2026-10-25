@@ -140,6 +140,13 @@ async fn run(options: Options) -> std::io::Result<()> {
     println!("  target/debug/herald.exe --config {config} sync --all --with-attachments");
     println!("  target/debug/herald.exe --config {config} tui");
     println!();
+    println!("语义检索已启用。首次使用前下载模型（约 95 MB）：");
+    println!(
+        "  target/debug/herald.exe --config {config} models download --mirror https://hf-mirror.com"
+    );
+    println!("  target/debug/herald.exe --config {config} sync --all --with-attachments --index");
+    println!("  target/debug/herald.exe --config {config} search 团队开会讨论了什么 --semantic");
+    println!();
     println!("按 Ctrl+C 停止 mock 服务。");
 
     tokio::signal::ctrl_c().await?;
@@ -175,7 +182,7 @@ auto_body_max_size = 0
 export_dir = "{dir}/exports"
 
 [semantic]
-enabled = false
+enabled = true
 "#,
         username = toml_escape(&options.username),
         password = toml_escape(&options.password),
