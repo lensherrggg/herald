@@ -145,14 +145,33 @@ fn renders_mailbox_detail_search_browser_and_raw_views() {
     assert_eq!(app.total, 2);
     assert_eq!(app.messages[0].subject.as_deref(), Some("会议纪要"));
     assert_eq!(app.messages[1].subject.as_deref(), Some("项目进度汇报"));
+    assert_eq!(
+        app.detail
+            .as_ref()
+            .map(|detail| detail.header.uidl.as_str()),
+        Some("m2"),
+        "the selected message should be previewed without pressing Enter"
+    );
+    assert!(app.detail.as_ref().unwrap().body_cached);
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.focus, Focus::Detail);
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(app.focus, Focus::List);
 
     let wide = compact(&render(&app, 120, 40));
     for expected in ["Herald", "work", "会议纪要", "项目进度汇报", "邮件"] {
         assert!(wide.contains(expected), "missing {expected}:\n{wide}");
     }
 
-    app.selected = 1;
-    app.load_detail();
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(app.selected, 1);
+    assert_eq!(
+        app.detail
+            .as_ref()
+            .map(|detail| detail.header.uidl.as_str()),
+        Some("m1")
+    );
+    assert!(app.detail.as_ref().unwrap().body_cached);
     let detail = compact(&render(&app, 120, 40));
     for expected in [
         "项目进度汇报",
@@ -228,6 +247,8 @@ fn renders_mailbox_detail_search_browser_and_raw_views() {
     assert!(matches!(app.mode, herald_tui::app::Mode::Raw));
     let raw = app.raw.clone().unwrap_or_default();
     assert!(raw.contains("Subject: 会议纪要"), "{raw}");
+    assert!(!raw.contains('\r'), "raw view must normalize CRLF");
+    assert!(!raw.contains('\t'), "raw view must expand tabs");
     let raw_screen = compact(&render(&app, 120, 40));
     assert!(raw_screen.contains("原始邮件"), "{raw_screen}");
     assert!(raw_screen.contains("Subject:"), "{raw_screen}");

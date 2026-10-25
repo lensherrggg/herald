@@ -14,6 +14,7 @@ use crate::browser::{sanitize_filename, Browser};
 use crate::ui;
 
 pub const PAGE_SIZE: usize = 20;
+pub const RAW_VIEW_LIMIT: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputKind {
@@ -116,6 +117,7 @@ pub struct App {
     pub detail_scroll: u16,
     pub raw: Option<String>,
     pub raw_scroll: u16,
+    pub raw_truncated: bool,
     pub mode: Mode,
     pub status: StatusMessage,
     pub focus: Focus,
@@ -148,6 +150,7 @@ impl App {
             detail_scroll: 0,
             raw: None,
             raw_scroll: 0,
+            raw_truncated: false,
             mode: Mode::Browse,
             status: StatusMessage::default(),
             focus: Focus::List,
@@ -161,7 +164,7 @@ impl App {
             app.status = StatusMessage::error("没有可用账户，请先编辑 herald.toml");
         } else {
             app.reload();
-            app.status = StatusMessage::info("就绪：s 同步 · / 搜索 · ? 语义 · a 账户 · h 帮助");
+            app.status = StatusMessage::info("就绪");
         }
         app
     }
@@ -256,6 +259,25 @@ impl App {
         if !still_visible {
             self.detail = None;
         }
+        self.preview_selected();
+    }
+
+    /// Show the selected message from the local database only. Bodies that
+    /// were not cached are fetched explicitly with Enter, so moving the
+    /// selection never blocks on the network.
+    pub fn preview_selected(&mut self) {
+        let Some((uidl, account)) = self
+            .current_message()
+            .map(|message| (message.uidl.clone(), self.account.clone()))
+        else {
+            self.detail = None;
+            return;
+        };
+        self.detail = self
+            .herald
+            .get_stored_message(account.as_deref(), &uidl)
+            .ok();
+        self.detail_scroll = 0;
     }
 
     pub fn load_detail(&mut self) {
@@ -295,10 +317,16 @@ impl App {
             .block_on(self.herald.raw_message(account.as_deref(), &uidl))
         {
             Ok(bytes) => {
-                self.raw = Some(String::from_utf8_lossy(&bytes).to_string());
+                let (text, truncated) = prepare_raw(&bytes, RAW_VIEW_LIMIT);
+                self.raw = Some(text);
                 self.raw_scroll = 0;
+                self.raw_truncated = truncated;
                 self.mode = Mode::Raw;
-                self.status = StatusMessage::info("原始邮件：↑/↓ 滚动，Esc 返回");
+                self.status = StatusMessage::info(if truncated {
+                    "原始邮件：超过 256KB，已截断 · Esc 返回"
+                } else {
+                    "原始邮件：↑/↓ 滚动，Esc 返回"
+                });
             }
             Err(err) => {
                 self.status = StatusMessage::error(format!("获取原始邮件失败：{err}"));
@@ -528,7 +556,7 @@ impl App {
             Focus::Detail => Focus::List,
         };
         if self.focus == Focus::Detail && self.detail.is_none() {
-            self.load_detail();
+            self.preview_selected();
         }
     }
 
@@ -622,21 +650,26 @@ impl App {
             KeyCode::PageUp => self.previous_page(),
             KeyCode::Down | KeyCode::Char('j') if !self.messages.is_empty() => {
                 self.selected = (self.selected + 1).min(self.messages.len() - 1);
-                self.detail = None;
+                self.preview_selected();
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected = self.selected.saturating_sub(1);
-                self.detail = None;
+                self.preview_selected();
             }
             KeyCode::Char('g') => {
                 self.selected = 0;
-                self.detail = None;
+                self.preview_selected();
             }
             KeyCode::Char('G') => {
                 self.selected = self.messages.len().saturating_sub(1);
-                self.detail = None;
+                self.preview_selected();
             }
-            KeyCode::Enter => self.load_detail(),
+            KeyCode::Enter => {
+                self.load_detail();
+                if self.detail.is_some() {
+                    self.focus = Focus::Detail;
+                }
+            }
             KeyCode::Tab => self.toggle_focus(),
             KeyCode::Char('r') => self.load_raw(),
             KeyCode::Char('e') => self.start_export(),
@@ -644,8 +677,8 @@ impl App {
                 if self.search.is_some() {
                     self.clear_search();
                 } else {
-                    self.detail = None;
                     self.focus = Focus::List;
+                    self.preview_selected();
                 }
             }
             _ => {}
@@ -804,6 +837,7 @@ impl App {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.mode = Mode::Browse;
                 self.raw = None;
+                self.raw_truncated = false;
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.raw_scroll = self.raw_scroll.saturating_add(1)
@@ -919,6 +953,9 @@ pub fn join_addrs(addrs: &[String]) -> String {
 }
 
 pub fn body_text(detail: &MessageDetail) -> String {
+    if !detail.body_cached {
+        return "（正文未缓存，按 Enter 从服务器加载）".to_string();
+    }
     match (&detail.body_text, &detail.body_html) {
         (Some(text), _) if !text.trim().is_empty() => text.clone(),
         (_, Some(html)) if !html.trim().is_empty() => format!("[HTML 正文]\n{html}"),
@@ -941,6 +978,30 @@ pub fn attachment_line(meta: &AttachmentMeta) -> String {
             ""
         }
     )
+}
+
+fn prepare_raw(bytes: &[u8], limit: usize) -> (String, bool) {
+    let truncated = bytes.len() > limit;
+    let bytes = if truncated { &bytes[..limit] } else { bytes };
+    let text = String::from_utf8_lossy(bytes);
+    let mut output = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\r' => {
+                if chars.peek() != Some(&'\n') {
+                    output.push('\n');
+                }
+            }
+            '\t' => output.push_str("    "),
+            ch if ch.is_control() && ch != '\n' => output.push(' '),
+            ch => output.push(ch),
+        }
+    }
+    if truncated {
+        output.push_str("\n\n[原始邮件过长，已截断]");
+    }
+    (output, truncated)
 }
 
 fn page_count_for(total: usize) -> usize {
@@ -972,5 +1033,38 @@ mod tests {
         assert_eq!(page_count_for(41), 3);
         assert_eq!(page_count_for(40), 2);
         assert_eq!(page_count_for(0), 1);
+    }
+
+    #[test]
+    fn uncached_body_asks_for_enter_instead_of_showing_empty_text() {
+        let detail = MessageDetail {
+            header: herald_core::model::MessageHeader {
+                uidl: "u1".to_string(),
+                message_id: None,
+                from: None,
+                to: vec![],
+                cc: vec![],
+                subject: Some("s".to_string()),
+                date: None,
+                size: 1,
+            },
+            body_text: None,
+            body_html: None,
+            body_cached: false,
+            attachments: vec![],
+        };
+        assert!(body_text(&detail).contains("按 Enter"));
+    }
+
+    #[test]
+    fn raw_view_normalizes_control_characters_and_truncates() {
+        let (text, truncated) = prepare_raw(b"a\r\nb\tc\x01d", 1024);
+        assert_eq!(text, "a\nb    c d");
+        assert!(!truncated);
+
+        let (text, truncated) = prepare_raw(b"abcdef", 3);
+        assert!(truncated);
+        assert!(text.starts_with("abc"));
+        assert!(text.contains("已截断"));
     }
 }

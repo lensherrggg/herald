@@ -151,7 +151,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
     let block = panel(format!("{} 详情 ", focus_marker(focused)), focused, app);
     let Some(detail) = &app.detail else {
         frame.render_widget(
-            Paragraph::new("按 Enter 加载邮件详情\n\nr 查看原始邮件 · e 导出附件")
+            Paragraph::new("选择邮件查看详情\n\nr 查看原始邮件 · e 导出附件")
                 .alignment(Alignment::Center)
                 .block(block)
                 .wrap(Wrap { trim: true }),
@@ -211,14 +211,25 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
 
     if area.height > 1 {
         let hints = match &app.mode {
+            Mode::Browse if app.focus == Focus::Detail => {
+                if area.width < 70 {
+                    "↑↓ 滚动 · Tab 列表 · r 原文 · h 帮助"
+                } else {
+                    "↑↓ 滚动 · Tab 列表 · r 原文 · e 导出 · h 帮助"
+                }
+            }
             Mode::Browse => {
-                "s 同步 · S 全部 · / 关键词 · ? 语义 · a 账户 · o 排序 · [ ] 翻页 · Enter 详情 · Tab 焦点 · r 原文 · e 导出 · h 帮助 · q 退出"
+                if area.width < 70 {
+                    "s 同步 · / 搜索 · Enter 详情 · h 帮助"
+                } else {
+                    "s 同步 · / 搜索 · ? 语义 · Enter 详情 · r 原文 · e 导出 · h 帮助"
+                }
             }
             Mode::Input(_) => "Enter 确认 · Esc 取消",
-            Mode::Accounts => "↑/↓ 选择 · Enter 切换 · Esc 取消",
-            Mode::Attachments => "↑/↓ 选择附件 · Enter 导出 · Esc 取消",
-            Mode::Browser => "↑/↓ 选择 · Enter 进入/选名 · d 存入当前目录 · f 改文件名 · n 新建目录 · Esc 取消",
-            Mode::Raw => "↑/↓ · PgUp/PgDn 滚动 · g/G 首尾 · Esc 返回",
+            Mode::Accounts => "↑↓ 选择 · Enter 切换 · Esc 取消",
+            Mode::Attachments => "↑↓ 选择附件 · Enter 导出 · Esc 取消",
+            Mode::Browser => "↑↓ 选择 · Enter 进入 · d 保存 · f 改名 · n 新建 · Esc 取消",
+            Mode::Raw => "↑↓ · PgUp/PgDn 滚动 · g/G 首尾 · Esc 返回",
             Mode::Help => "Esc 返回",
         };
         let hint_area = Rect {
@@ -411,12 +422,23 @@ fn draw_browser(frame: &mut Frame, app: &App) {
 
 fn draw_raw(frame: &mut Frame, app: &App) {
     let area = frame.area();
-    let text = app.raw.as_deref().unwrap_or("");
-    let paragraph = Paragraph::new(text.to_string())
-        .block(panel(" 原始邮件 · Esc 返回 ", true, app))
+    let footer_height = if area.height >= 12 { 2 } else { 1 };
+    let height = area.height.saturating_sub(footer_height);
+    if height == 0 {
+        return;
+    }
+    let raw_area = Rect { height, ..area };
+    frame.render_widget(Clear, raw_area);
+    let title = if app.raw_truncated {
+        " 原始邮件（已截断）· Esc 返回 "
+    } else {
+        " 原始邮件 · Esc 返回 "
+    };
+    let paragraph = Paragraph::new(app.raw.as_deref().unwrap_or(""))
+        .block(panel(title, true, app))
         .wrap(Wrap { trim: false })
         .scroll((app.raw_scroll, 0));
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, raw_area);
 }
 
 fn draw_help(frame: &mut Frame, app: &App) {
