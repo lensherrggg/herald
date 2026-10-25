@@ -179,12 +179,16 @@ impl MessageFilter {
 pub enum SearchKind {
     Keyword,
     Semantic,
+    Hybrid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
     pub total: usize,
     pub messages: Vec<MessageSummary>,
+    /// Why a requested mode had to degrade, e.g. hybrid without a model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// Resolve the start directory for attachment export:

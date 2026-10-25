@@ -29,6 +29,14 @@ struct Cli {
     command: Command,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum SearchMode {
+    Auto,
+    Keyword,
+    Semantic,
+    Hybrid,
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// 生成示例配置
@@ -74,13 +82,16 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         offset: usize,
     },
-    /// 关键词搜索
+    /// 关键词、语义或混合搜索（默认：有模型时混合）
     Search {
         query: String,
         #[arg(long)]
         account: Option<String>,
-        /// 使用本地语义检索（需先下载模型）
-        #[arg(long)]
+        /// 检索模式；auto 在模型可用时使用混合检索
+        #[arg(long, value_enum)]
+        mode: Option<SearchMode>,
+        /// 等价于 --mode semantic（保留旧写法）
+        #[arg(long, conflicts_with = "mode")]
         semantic: bool,
         #[arg(long, default_value_t = 20)]
         limit: usize,
@@ -251,16 +262,21 @@ async fn run(config: Option<PathBuf>, json: bool, command: Command) -> anyhow::R
         Command::Search {
             query,
             account,
+            mode,
             semantic,
             limit,
             offset,
         } => {
-            let kind = if semantic {
-                SearchKind::Semantic
-            } else {
-                SearchKind::Keyword
+            let kind = match (semantic, mode) {
+                (true, _) | (false, Some(SearchMode::Semantic)) => SearchKind::Semantic,
+                (false, Some(SearchMode::Keyword)) => SearchKind::Keyword,
+                (false, Some(SearchMode::Hybrid)) => SearchKind::Hybrid,
+                (false, None | Some(SearchMode::Auto)) => herald.default_search_kind(),
             };
             let result = herald.search(account.as_deref(), &query, kind, limit, offset)?;
+            if let Some(note) = &result.note {
+                eprintln!("提示：{note}");
+            }
             if json {
                 print_json(&result)?;
             } else {

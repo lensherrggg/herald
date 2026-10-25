@@ -11,7 +11,7 @@ Herald 解决的是「让 Agent 稳定、受控、低 token 地读内网 POP3 �
 
 - 只读收信，绝不删除、标记、移动或发信。
 - 本地 SQLite 缓存，UIDL 增量同步，支持离线重复读取。
-- 中文友好的关键词搜索与本地语义搜索。
+- 中文友好的关键词搜索、本地语义搜索与 RRF 混合检索。
 - 同一套 core 同时服务 MCP、CLI、TUI；TUI 编入 CLI 二进制，且不绕道 MCP。
 - 便携部署：配置、数据库、模型默认随可执行文件目录。
 
@@ -156,6 +156,7 @@ sync(options)
 | `list_messages` | 只查 SQLite；支持账户、from、since/until、排序（日期/发件人/主题）、升降序、分页 |
 | `keyword_search` | jieba 分词 → FTS5 `MATCH`；0 结果或 FTS 错误时回退 `LIKE` |
 | `semantic_search` | 查询文本 embedding → `vec0` KNN → 按账户过滤 → 距离升序 |
+| `hybrid_search` | 两路各取 `limit + offset` 条候选 → RRF 融合去重 → 排序后分页；语义不可用时降级为关键词并附 `note` |
 | `get_message` | 正文已缓存则直接返回；否则 RETR、解析、写正文/附件元数据/FTS/向量，二次调用不再联网 |
 | `get_raw_message` | POP3 按 UIDL 定位序号后 RETR；MCP 层截断到 256KB |
 | `get_attachment` | 先查 BLOB；未命中则 RETR 整封、解析并写入所需附件内容；仅 CLI/TUI 可达 |
@@ -230,6 +231,15 @@ sync(options)
 - 查询：embedding → 取 `k = max(limit × 10, 100)` 的近邻 → 按账户过滤 → 取前 `limit`。
 - 模型缺失是预期状态：只在第一次失败时告警，不阻塞同步。
 - MCP 不编译该模块，因此 Agent 无法触发模型下载或向量检索。
+
+### 8.3 混合
+
+- 入口：CLI `--mode auto|keyword|semantic|hybrid`；`auto` 在 `semantic.enabled` 且模型文件齐全时选 `hybrid`，否则 `keyword`。`--semantic` 保留为 `--mode semantic` 的简写。
+- 候选：关键词与语义各取 `limit + offset` 条（RRF 只需要相对名次，分页时窗口随之扩大）。
+- 融合：`score = Σ 1/(60 + 名次)`，同一 UIDL 两路得分相加；按得分降序、日期降序打破平局。
+- 降级：语义侧失败（模型缺失、配置关闭、`vec0` 不可用）时保留关键词结果，并在 `SearchResult.note` 中说明原因；CLI 打到 stderr，TUI 显示在状态栏。
+- `total` 是融合候选数（与纯语义模式一样，受本次窗口大小限制），不是全库精确命中数。
+- TUI：`/` 打开搜索框，`Tab` 循环关键词 → 混合 → 语义；默认值同样走 `auto` 规则。
 
 ---
 
@@ -369,5 +379,5 @@ App
 
 - 定时同步：复用 `Herald::sync`，由外部调度器驱动；需要补充并发锁与通知机制。
 - 更多模型：只要目录符合 5 文件布局与 512 维输出即可替换。
-- 混合检索：关键词候选 + 向量重排，目前保持两条独立路径以降低复杂度。
+- 混合检索调权：当前 RRF 两路等权；可在有评测集后引入关键词权重或语义距离阈值。
 - 附件策略：按 MIME/大小自动跳过或限制内嵌图片。

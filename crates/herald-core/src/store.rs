@@ -610,6 +610,7 @@ impl Store {
         Ok(SearchResult {
             total: total as usize,
             messages: rows.collect::<rusqlite::Result<Vec<_>>>()?,
+            note: None,
         })
     }
 
@@ -657,6 +658,7 @@ impl Store {
         Ok(SearchResult {
             total: total as usize,
             messages: rows.collect::<rusqlite::Result<Vec<_>>>()?,
+            note: None,
         })
     }
 
@@ -876,6 +878,7 @@ impl Store {
         Ok(SearchResult {
             total: messages.len(),
             messages,
+            note: None,
         })
     }
 

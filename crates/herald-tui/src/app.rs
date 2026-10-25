@@ -18,25 +18,27 @@ pub const RAW_VIEW_LIMIT: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputKind {
-    KeywordSearch,
-    SemanticSearch,
+    Search,
     NewDir,
-}
-
-impl InputKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            InputKind::KeywordSearch => "关键词搜索",
-            InputKind::SemanticSearch => "语义搜索",
-            InputKind::NewDir => "新建目录",
-        }
-    }
 }
 
 #[derive(Debug)]
 pub struct InputState {
     pub kind: InputKind,
     pub value: String,
+    pub search_kind: Option<SearchKind>,
+}
+
+impl InputState {
+    pub fn label(&self) -> &'static str {
+        match (self.kind, self.search_kind) {
+            (InputKind::Search, Some(SearchKind::Keyword)) => "关键词搜索",
+            (InputKind::Search, Some(SearchKind::Hybrid)) => "混合搜索",
+            (InputKind::Search, Some(SearchKind::Semantic)) => "语义搜索",
+            (InputKind::Search, None) => "搜索",
+            (InputKind::NewDir, _) => "新建目录",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +57,7 @@ impl SearchState {
     pub fn label(&self) -> &'static str {
         match self.kind {
             SearchKind::Keyword => "关键词",
+            SearchKind::Hybrid => "混合",
             SearchKind::Semantic => "语义",
         }
     }
@@ -113,6 +116,7 @@ pub struct App {
     pub sort: MessageSort,
     pub descending: bool,
     pub search: Option<SearchState>,
+    pub search_note: Option<String>,
     pub detail: Option<MessageDetail>,
     pub detail_scroll: u16,
     pub raw: Option<String>,
@@ -146,6 +150,7 @@ impl App {
             sort: MessageSort::Date,
             descending: true,
             search: None,
+            search_note: None,
             detail: None,
             detail_scroll: 0,
             raw: None,
@@ -223,17 +228,23 @@ impl App {
             };
             self.herald
                 .list_messages(Some(&account), &filter)
-                .map(|(total, messages)| SearchResult { total, messages })
+                .map(|(total, messages)| SearchResult {
+                    total,
+                    messages,
+                    note: None,
+                })
         };
         match result {
             Ok(result) => {
                 self.total = result.total;
                 self.messages = result.messages;
+                self.search_note = result.note;
             }
             Err(err) => {
                 self.status = StatusMessage::error(err.to_string());
                 self.messages.clear();
                 self.total = 0;
+                self.search_note = None;
             }
         }
         let last_page = self.page_count().saturating_sub(1);
@@ -440,20 +451,25 @@ impl App {
         self.selected = 0;
         self.detail = None;
         self.reload();
-        self.status = StatusMessage::info(match self.search.as_ref() {
-            Some(search) => format!(
-                "{}搜索“{}”：{} 条",
-                search.label(),
-                search.query,
-                self.total
-            ),
-            None => String::new(),
-        });
+        if let Some(note) = self.search_note.clone() {
+            self.status = StatusMessage::error(note);
+        } else {
+            self.status = StatusMessage::info(match self.search.as_ref() {
+                Some(search) => format!(
+                    "{}搜索“{}”：{} 条",
+                    search.label(),
+                    search.query,
+                    self.total
+                ),
+                None => String::new(),
+            });
+        }
     }
 
     pub fn clear_search(&mut self) {
         if self.search.is_some() {
             self.search = None;
+            self.search_note = None;
             self.page = 0;
             self.selected = 0;
             self.detail = None;
@@ -631,15 +647,11 @@ impl App {
             KeyCode::Char('s') => self.sync(false),
             KeyCode::Char('S') => self.sync(true),
             KeyCode::Char('/') => {
+                let kind = self.herald.default_search_kind();
                 self.mode = Mode::Input(InputState {
-                    kind: InputKind::KeywordSearch,
+                    kind: InputKind::Search,
                     value: String::new(),
-                })
-            }
-            KeyCode::Char('?') => {
-                self.mode = Mode::Input(InputState {
-                    kind: InputKind::SemanticSearch,
-                    value: String::new(),
+                    search_kind: Some(kind),
                 })
             }
             KeyCode::Char('o') => self.cycle_sort(),
@@ -704,9 +716,21 @@ impl App {
                     _ => return,
                 };
                 match kind {
-                    InputKind::KeywordSearch => self.run_search(SearchKind::Keyword, value),
-                    InputKind::SemanticSearch => self.run_search(SearchKind::Semantic, value),
+                    InputKind::Search => {
+                        let kind = match &self.mode {
+                            Mode::Input(state) => state.search_kind.unwrap_or(SearchKind::Keyword),
+                            _ => SearchKind::Keyword,
+                        };
+                        self.run_search(kind, value);
+                    }
                     InputKind::NewDir => self.submit_new_dir(value),
+                }
+            }
+            KeyCode::Tab => {
+                if let Mode::Input(state) = &mut self.mode {
+                    if let Some(kind) = state.search_kind {
+                        state.search_kind = Some(next_search_kind(kind));
+                    }
                 }
             }
             KeyCode::Backspace => {
@@ -826,6 +850,7 @@ impl App {
                 self.mode = Mode::Input(InputState {
                     kind: InputKind::NewDir,
                     value: String::new(),
+                    search_kind: None,
                 })
             }
             _ => {}
@@ -978,6 +1003,14 @@ pub fn attachment_line(meta: &AttachmentMeta) -> String {
             ""
         }
     )
+}
+
+fn next_search_kind(kind: SearchKind) -> SearchKind {
+    match kind {
+        SearchKind::Keyword => SearchKind::Hybrid,
+        SearchKind::Hybrid => SearchKind::Semantic,
+        SearchKind::Semantic => SearchKind::Keyword,
+    }
 }
 
 fn prepare_raw(bytes: &[u8], limit: usize) -> (String, bool) {

@@ -11,6 +11,7 @@ use crate::app::{
     Mode,
 };
 use crate::browser::Browser;
+use herald_core::model::SearchKind;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
@@ -222,10 +223,10 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
                 if area.width < 70 {
                     "s 同步 · / 搜索 · Enter 详情 · h 帮助"
                 } else {
-                    "s 同步 · / 搜索 · ? 语义 · Enter 详情 · r 原文 · e 导出 · h 帮助"
+                    "s 同步 · / 搜索 · Enter 详情 · r 原文 · e 导出 · h 帮助"
                 }
             }
-            Mode::Input(_) => "Enter 确认 · Esc 取消",
+            Mode::Input(_) => "Enter 确认 · Tab 切换模式 · Esc 取消",
             Mode::Accounts => "↑↓ 选择 · Enter 切换 · Esc 取消",
             Mode::Attachments => "↑↓ 选择附件 · Enter 导出 · Esc 取消",
             Mode::Browser => "↑↓ 选择 · Enter 进入 · d 保存 · f 改名 · n 新建 · Esc 取消",
@@ -253,15 +254,16 @@ fn draw_input(frame: &mut Frame, app: &App, state: &crate::app::InputState) {
         return;
     }
     frame.render_widget(Clear, area);
+    let hint = match state.kind {
+        crate::app::InputKind::Search => "Enter 确认 · Tab 切换关键词/混合/语义 · Esc 取消",
+        crate::app::InputKind::NewDir => "Enter 确认 · Esc 取消",
+    };
     let text = Text::from(vec![
         Line::from(Span::styled(format!("{}█", state.value), accent(app))),
-        Line::from(Span::styled(
-            "Enter 确认 · Esc 取消",
-            Style::new().add_modifier(Modifier::DIM),
-        )),
+        Line::from(Span::styled(hint, Style::new().add_modifier(Modifier::DIM))),
     ]);
     let paragraph = Paragraph::new(text)
-        .block(panel(format!(" {} ", state.kind.label()), true, app))
+        .block(panel(format!(" {} ", state.label()), true, app))
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 }
@@ -454,7 +456,7 @@ fn draw_help(frame: &mut Frame, app: &App) {
         )),
         Line::from(""),
         Line::from("s / S        增量同步 / 同步全部新邮件"),
-        Line::from("/ / ?        关键词搜索 / 语义搜索"),
+        Line::from("/            搜索（Tab 切换关键词/混合/语义）"),
         Line::from("a            切换账户"),
         Line::from("o / O        切换排序字段 / 反向排序"),
         Line::from("[ ] PgUp/PgDn 翻页"),
@@ -476,7 +478,7 @@ fn draw_help(frame: &mut Frame, app: &App) {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(format!(
-        "语义检索：{} · 模型文件：{}",
+        "语义检索：{} · 模型文件：{} · 默认检索：{}",
         if app.herald.semantic_enabled() {
             "启用"
         } else {
@@ -486,6 +488,10 @@ fn draw_help(frame: &mut Frame, app: &App) {
             "已就绪"
         } else {
             "缺失（herald models download）"
+        },
+        match app.herald.default_search_kind() {
+            SearchKind::Hybrid => "混合",
+            _ => "关键词",
         }
     )));
     let paragraph = Paragraph::new(Text::from(lines))

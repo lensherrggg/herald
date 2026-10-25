@@ -85,4 +85,20 @@ async fn sync_survives_missing_model_and_semantic_search_reports_it() {
         }
         other => panic!("expected MODEL_ERROR, got {other:?}"),
     }
+
+    assert_eq!(herald.default_search_kind(), SearchKind::Keyword);
+    let hybrid = herald
+        .search(None, "项目", SearchKind::Hybrid, 10, 0)
+        .expect("hybrid must degrade without a model");
+    assert_eq!(hybrid.total, 1);
+    assert_eq!(hybrid.messages[0].uidl, "m1");
+    assert!(
+        hybrid
+            .note
+            .as_deref()
+            .unwrap_or_default()
+            .contains("已仅用关键词"),
+        "{:?}",
+        hybrid.note
+    );
 }

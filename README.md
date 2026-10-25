@@ -6,7 +6,7 @@ Herald 是一个用 Rust 编写的**只读 POP3 邮箱客户端**，面向 AI Ag
 - **CLI**：可脚本化，支持 `--json`。
 - **TUI**：完整的终端收件箱，含中文搜索、原文查看与内置附件导出浏览器。
 - **本地缓存**：UIDL 增量同步，头部、正文、附件元数据与附件内容（可选）全部落在单个 SQLite 文件中。
-- **中文搜索**：jieba 预分词 + contentless FTS5；可选本地 ONNX 语义检索（CLI/TUI）。
+- **中文搜索**：jieba 预分词 + contentless FTS5；可选本地 ONNX 语义检索，两路可 RRF 混合（CLI/TUI）。
 - **便携优先**：默认把配置、数据库、模型放在可执行文件旁边；目录不可写时自动降级并明确提示。
 
 Herald **不删除、不标记已读、不移动邮件，也不支持 IMAP/SMTP**。
@@ -156,8 +156,11 @@ HF_ENDPOINT=https://hf-mirror.example ./target/release/herald models download
 ./target/release/herald sync --index          # 为已缓存正文批量升级全文 embedding
 
 ./target/release/herald list --limit 20 --offset 0
-./target/release/herald search 项目
-./target/release/herald search 项目进度 --semantic
+./target/release/herald search 项目                            # 默认：有模型时混合
+./target/release/herald search 项目进度 --mode keyword
+./target/release/herald search 项目进度 --mode semantic
+./target/release/herald search 项目进度 --mode hybrid
+./target/release/herald search 项目进度 --semantic             # 等价于 --mode semantic
 ./target/release/herald show <uidl>
 ./target/release/herald show <uidl> --full-body
 ./target/release/herald show <uidl> --raw
@@ -167,6 +170,8 @@ HF_ENDPOINT=https://hf-mirror.example ./target/release/herald models download
 ```
 
 全局参数：`--config <path>`、`--json`（所有命令均可脚本化读取）。
+
+`search` 默认 `--mode auto`：`semantic.enabled` 打开且模型文件齐全时使用混合检索，否则用关键词。混合检索把关键词（bm25）与语义（向量距离）两路结果按名次做 RRF 融合（`1/(60+名次)`，按 UIDL 去重），不需要校准两种分数量纲；语义不可用时自动降级为关键词，并在命令行 stderr 或 TUI 状态栏明确提示。
 
 ### 4.4 TUI
 
@@ -181,7 +186,7 @@ TUI 已并入 `herald`，不再单独产出 `herald-tui` 可执行文件。
 | 按键 | 作用 |
 |---|---|
 | `s` / `S` | 增量同步 / 同步全部新邮件 |
-| `/` / `?` | 关键词搜索 / 语义搜索 |
+| `/` | 搜索；输入框内 `Tab` 循环关键词 → 混合 → 语义（默认混合，需模型就绪） |
 | `a` | 切换账户 |
 | `o` / `O` | 切换排序字段（日期/发件人/主题）/ 反向 |
 | `[` `]` / PgUp PgDn | 翻页 |
@@ -349,7 +354,7 @@ CI 在 Ubuntu / macOS / Windows 上执行 `fmt + clippy + test`，见 [.github/w
 
 - 不支持 IMAP、SMTP 发信、删除/标记/移动邮件。
 - 不启用定时后台同步（仅保留同步接口）。
-- MCP 不暴露附件，也不提供语义检索。
+- MCP 不暴露附件，也不提供语义/混合检索（未编译语义能力）。
 - 语义模型不随仓库分发，需要单独下载或离线拷贝。
 - 单实例内账户共享一个 SQLite 数据库；未实现多用户权限。
 

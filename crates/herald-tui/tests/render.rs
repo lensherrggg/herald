@@ -110,6 +110,13 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
+fn input_label(app: &App) -> &'static str {
+    match &app.mode {
+        herald_tui::app::Mode::Input(state) => state.label(),
+        _ => panic!("expected search input"),
+    }
+}
+
 #[test]
 fn renders_mailbox_detail_search_browser_and_raw_views() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -269,6 +276,30 @@ fn renders_mailbox_detail_search_browser_and_raw_views() {
     assert!(app.status_text().contains("语义检索未启用"));
     let disabled = compact(&render(&app, 120, 40));
     assert!(disabled.contains("语义检索未启用"), "{disabled}");
+
+    app.run_search(SearchKind::Hybrid, "会议".to_string());
+    assert_eq!(app.total, 1);
+    assert!(
+        app.status_text().contains("已仅用关键词"),
+        "{}",
+        app.status_text()
+    );
+    let hybrid = compact(&render(&app, 120, 40));
+    assert!(hybrid.contains("混合"), "{hybrid}");
+    assert!(hybrid.contains("会议纪要"), "{hybrid}");
+    app.clear_search();
+    assert_eq!(app.total, 2);
+
+    app.handle_key(key(KeyCode::Char('/')));
+    assert_eq!(input_label(&app), "关键词搜索");
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(input_label(&app), "混合搜索");
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(input_label(&app), "语义搜索");
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(input_label(&app), "关键词搜索");
+    app.handle_key(key(KeyCode::Esc));
+    assert!(matches!(app.mode, herald_tui::app::Mode::Browse));
 
     app.selected = 1;
     app.load_detail();

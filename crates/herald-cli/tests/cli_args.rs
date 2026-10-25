@@ -32,4 +32,18 @@ fn help_exposes_tui_subcommand() {
     let text = String::from_utf8_lossy(&tui.stdout);
     assert!(text.contains("--account"), "{text}");
     assert!(text.contains("终端界面"), "{text}");
+
+    let search = run(&["search", "--help"]);
+    assert!(search.status.success());
+    let text = String::from_utf8_lossy(&search.stdout);
+    for expected in [
+        "--mode",
+        "auto",
+        "keyword",
+        "semantic",
+        "hybrid",
+        "--semantic",
+    ] {
+        assert!(text.contains(expected), "missing {expected}:\n{text}");
+    }
 }

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::config::{AccountConfig, Config};
@@ -89,6 +90,15 @@ impl Herald {
         enabled
     }
 
+    /// Hybrid search when embeddings are usable, keyword-only otherwise.
+    pub fn default_search_kind(&self) -> SearchKind {
+        #[cfg(feature = "semantic")]
+        if self.semantic_enabled() && self.semantic.model_files_present() {
+            return SearchKind::Hybrid;
+        }
+        SearchKind::Keyword
+    }
+
     pub fn accounts(&self) -> Result<Vec<AccountSummary>> {
         self.store.list_accounts()
     }
@@ -166,6 +176,7 @@ impl Herald {
         match kind {
             SearchKind::Keyword => self.keyword_search(account, query, limit, offset),
             SearchKind::Semantic => self.semantic_search(account, query, limit, offset),
+            SearchKind::Hybrid => self.hybrid_search(account, query, limit, offset),
         }
     }
 
@@ -202,6 +213,44 @@ impl Herald {
         Err(HeraldError::Unsupported(
             "此二进制未编译语义检索支持（feature = semantic）".to_string(),
         ))
+    }
+
+    #[cfg(feature = "semantic")]
+    fn hybrid_search(
+        &mut self,
+        account: Option<&str>,
+        query: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<SearchResult> {
+        let (_, account_id) = self.account_and_id(account)?;
+        // Take as many candidates from each side as we intend to return; RRF
+        // only needs the relative order, not the raw scores.
+        let window = limit.saturating_add(offset).max(1);
+        let keyword = self.store.keyword_search(account_id, query, window, 0)?;
+        let (semantic, note) = match self.semantic.search(&self.store, account_id, query, window) {
+            Ok(result) => (result.messages, None),
+            Err(err) => (
+                Vec::new(),
+                Some(format!("语义检索不可用，已仅用关键词：{err}")),
+            ),
+        };
+        let mut result = fuse_rrf(&keyword.messages, &semantic, limit, offset);
+        result.note = note;
+        Ok(result)
+    }
+
+    #[cfg(not(feature = "semantic"))]
+    fn hybrid_search(
+        &mut self,
+        account: Option<&str>,
+        query: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<SearchResult> {
+        let mut result = self.keyword_search(account, query, limit, offset)?;
+        result.note = Some("此二进制未编译语义检索支持，已仅用关键词".to_string());
+        Ok(result)
     }
 
     pub fn get_stored_message(&self, account: Option<&str>, uidl: &str) -> Result<MessageDetail> {
@@ -433,9 +482,103 @@ fn unique_target(path: PathBuf) -> PathBuf {
     path
 }
 
+/// Reciprocal Rank Fusion of two ranked lists. BM25 and vector distance live
+/// on different scales, so only the positions are combined.
+fn fuse_rrf(
+    keyword: &[MessageSummary],
+    semantic: &[MessageSummary],
+    limit: usize,
+    offset: usize,
+) -> SearchResult {
+    const RRF_K: f64 = 60.0;
+    let mut fused: HashMap<&str, (f64, &MessageSummary)> = HashMap::new();
+    for (rank, message) in keyword.iter().enumerate() {
+        let score = 1.0 / (RRF_K + (rank + 1) as f64);
+        fused.insert(message.uidl.as_str(), (score, message));
+    }
+    for (rank, message) in semantic.iter().enumerate() {
+        let score = 1.0 / (RRF_K + (rank + 1) as f64);
+        fused
+            .entry(message.uidl.as_str())
+            .and_modify(|(total, _)| *total += score)
+            .or_insert((score, message));
+    }
+    let mut ranked: Vec<(f64, &MessageSummary)> = fused.into_values().collect();
+    ranked.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.1.date.cmp(&a.1.date))
+    });
+    let total = ranked.len();
+    let messages = ranked
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|(_, message)| message.clone())
+        .collect();
+    SearchResult {
+        total,
+        messages,
+        note: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn summary(uidl: &str, date: &str) -> MessageSummary {
+        MessageSummary {
+            uidl: uidl.to_string(),
+            subject: Some(uidl.to_string()),
+            from: None,
+            date: Some(date.to_string()),
+            size: 0,
+        }
+    }
+
+    #[test]
+    fn rrf_prefers_messages_found_by_both_sides() {
+        let keyword = vec![
+            summary("both", "2024-09-03T00:00:00Z"),
+            summary("keyword", "2024-09-02T00:00:00Z"),
+        ];
+        let semantic = vec![
+            summary("semantic", "2024-09-04T00:00:00Z"),
+            summary("both", "2024-09-03T00:00:00Z"),
+        ];
+        let result = fuse_rrf(&keyword, &semantic, 10, 0);
+        assert_eq!(result.total, 3);
+        assert_eq!(result.messages[0].uidl, "both");
+        assert_eq!(result.messages.len(), 3);
+    }
+
+    #[test]
+    fn rrf_paginates_after_fusing() {
+        let keyword = vec![
+            summary("a", "2024-09-03T00:00:00Z"),
+            summary("b", "2024-09-02T00:00:00Z"),
+            summary("c", "2024-09-04T00:00:00Z"),
+        ];
+        let semantic = vec![
+            summary("c", "2024-09-04T00:00:00Z"),
+            summary("d", "2024-09-01T00:00:00Z"),
+        ];
+        let page = fuse_rrf(&keyword, &semantic, 2, 1);
+        assert_eq!(page.total, 4);
+        assert_eq!(page.messages.len(), 2);
+        let all = fuse_rrf(&keyword, &semantic, 10, 0);
+        assert_eq!(page.messages[0].uidl, all.messages[1].uidl);
+        assert_eq!(page.messages[1].uidl, all.messages[2].uidl);
+    }
+
+    #[test]
+    fn rrf_ties_break_on_newer_date() {
+        let keyword = vec![summary("old", "2024-09-01T00:00:00Z")];
+        let semantic = vec![summary("new", "2024-09-05T00:00:00Z")];
+        let result = fuse_rrf(&keyword, &semantic, 10, 0);
+        assert_eq!(result.messages[0].uidl, "new");
+    }
 
     #[test]
     fn safe_filenames_strip_paths() {
