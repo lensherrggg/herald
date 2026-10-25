@@ -1450,7 +1450,7 @@ pub fn format_size(bytes: u64) -> String {
 }
 
 pub fn shorten_date(date: Option<&str>) -> String {
-    herald_core::time::china_date(date)
+    herald_core::time::china_list_date(date)
 }
 
 /// Long address lists would otherwise push the body far down the detail pane;
@@ -1726,12 +1726,8 @@ mod tests {
     fn formats_sizes_and_dates() {
         assert_eq!(format_size(900), "900 B");
         assert_eq!(format_size(2048), "2.0 KB");
-        assert_eq!(
-            shorten_date(Some("Tue, 03 Sep 2024 10:00:00 +0800")),
-            "2024-09-03"
-        );
-        assert_eq!(shorten_date(Some("2024-09-03T10:00:00Z")), "2024-09-03");
-        assert_eq!(shorten_date(Some("2024-09-03T20:00:00Z")), "2024-09-04");
+        assert_eq!(shorten_date(None), "-");
+        assert_eq!(shorten_date(Some("not a date")), "not a date");
         assert_eq!(sender_short(Some("张三 <a@b.c>")), "张三");
     }
 

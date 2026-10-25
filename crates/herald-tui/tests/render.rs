@@ -392,6 +392,10 @@ fn renders_mailbox_detail_search_browser_and_raw_views() {
     let plain = compact(&render(&app, 120, 40));
     assert!(plain.contains("项目进度汇报"), "{plain}");
     assert!(plain.contains("Herald"), "{plain}");
+    assert!(
+        plain.contains("24-09-03"),
+        "the compact date sits on its own line:\n{plain}"
+    );
 
     let tiny = compact(&render(&app, 30, 6));
     assert!(tiny.contains("终端太小"), "{tiny}");
@@ -1037,4 +1041,68 @@ fn export_browser_jumps_to_a_recently_visited_directory() {
         "Esc closes the jump overlay without changing directories"
     );
     assert_eq!(app.browser.as_ref().unwrap().dir, target);
+}
+
+#[test]
+fn long_subjects_are_truncated_with_an_ellipsis() {
+    let subject = "超长主题".repeat(30);
+    let raw = format!(
+        "From: 张三 <zhangsan@example.com>\r\n\
+         To: alice@example.com\r\n\
+         Subject: {subject}\r\n\
+         Date: Tue, 03 Sep 2024 10:00:00 +0800\r\n\
+         Message-ID: <long@example.com>\r\n\
+         Content-Type: text/plain; charset=utf-8\r\n\
+         \r\n\
+         正文\r\n"
+    );
+    let (app, _dir) = synced_app(20, vec![MockMessage::new("long", raw)]);
+
+    let rows = render_rows(&app, 100, 30);
+    let date_row = rows
+        .iter()
+        .position(|row| compact(row).contains("24-09-03"))
+        .expect("list date row");
+    let subject_row = compact(&rows[date_row - 1]);
+    let sender_row = compact(&rows[date_row - 2]);
+    assert!(subject_row.contains('…'), "{subject_row}");
+    assert!(subject_row.contains("超长主题"), "{subject_row}");
+    assert!(sender_row.contains("张三"), "{sender_row}");
+}
+
+#[test]
+fn list_dates_are_readable_gray_in_color_mode() {
+    let (mut app, _dir) = synced_app(20, vec![message_one(), message_two()]);
+    app.color = true;
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("test terminal");
+    terminal
+        .draw(|frame| ui::draw(frame, &app))
+        .expect("draw list");
+
+    let buffer = terminal.backend().buffer();
+    let mut found = false;
+    for y in 0..30 {
+        let cells: Vec<_> = (0..20).filter_map(|x| buffer.cell((x, y))).collect();
+        let text: String = cells.iter().map(|cell| cell.symbol()).collect();
+        if !text.contains("24-09-03") {
+            continue;
+        }
+        let date_cells: Vec<_> = cells
+            .iter()
+            .filter(|cell| {
+                cell.symbol()
+                    .chars()
+                    .all(|ch| ch.is_ascii_digit() || ch == '-')
+            })
+            .filter(|cell| !cell.symbol().trim().is_empty())
+            .collect();
+        assert!(!date_cells.is_empty(), "{text}");
+        assert!(
+            date_cells.iter().all(|cell| cell.fg == Color::Gray),
+            "dates must stay readable: {text}"
+        );
+        found = true;
+        break;
+    }
+    assert!(found, "list date row not rendered");
 }

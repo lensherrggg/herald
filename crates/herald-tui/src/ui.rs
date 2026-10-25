@@ -1,10 +1,9 @@
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{
-    Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap,
-};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
     attachment_line, body_text, format_size, join_addrs, raw_rows, sender_short, shorten_date,
@@ -119,37 +118,72 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
         );
         return;
     }
-    let rows = app.messages.iter().map(|message| {
-        Row::new(vec![
-            Cell::from(if message.is_read { " " } else { "●" }),
-            Cell::from(shorten_date(message.date.as_deref())),
-            Cell::from(sender_short(message.from.as_deref())),
-            Cell::from(
-                message
-                    .subject
-                    .clone()
-                    .filter(|subject| !subject.trim().is_empty())
-                    .unwrap_or_else(|| "(无主题)".to_string()),
-            ),
-        ])
-    });
-    let header = Row::new(vec!["", "日期", "发件人", "主题"])
-        .style(Style::new().add_modifier(Modifier::BOLD | Modifier::UNDERLINED));
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(1),
-            Constraint::Length(11),
-            Constraint::Length(18),
-            Constraint::Min(8),
-        ],
-    )
-    .header(header)
-    .block(block)
-    .column_spacing(1)
-    .row_highlight_style(selected(app));
-    let mut state = TableState::default().with_selected(Some(app.selected));
-    frame.render_stateful_widget(table, area, &mut state);
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let items: Vec<ListItem> = app
+        .messages
+        .iter()
+        .map(|message| {
+            let marker = if message.is_read { "  " } else { "● " };
+            let sender = truncate_line(
+                &sender_short(message.from.as_deref()),
+                inner_width.saturating_sub(2),
+            );
+            let top = Line::from(vec![
+                Span::raw(marker),
+                Span::styled(sender, Style::new().add_modifier(Modifier::BOLD)),
+            ]);
+            let subject = message
+                .subject
+                .clone()
+                .filter(|subject| !subject.trim().is_empty())
+                .unwrap_or_else(|| "(无主题)".to_string());
+            let middle = Line::from(truncate_line(&subject, inner_width));
+            let bottom = Line::from(Span::styled(
+                shorten_date(message.date.as_deref()),
+                subtle(app),
+            ));
+            ListItem::new(vec![top, middle, bottom])
+        })
+        .collect();
+    let list = List::new(items).block(block).highlight_style(selected(app));
+    let mut state = ListState::default().with_selected(Some(app.selected));
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+/// Cut to a display-column budget, appending an ellipsis so a truncated
+/// subject is visibly incomplete. Never splits a wide character in half.
+fn truncate_line(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(text) <= width {
+        return text.to_string();
+    }
+    let budget = width - 1;
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let ch_width = ch.width().unwrap_or(0);
+        if used + ch_width > budget {
+            break;
+        }
+        out.push(ch);
+        used += ch_width;
+    }
+    let keep = out.trim_end().len();
+    out.truncate(keep);
+    out.push('…');
+    out
+}
+
+fn subtle(app: &App) -> Style {
+    if app.color {
+        // DarkGray + DIM became unreadable on dark terminals; a normal gray
+        // still separates the date from the subject while staying legible.
+        Style::new().fg(Color::Gray)
+    } else {
+        Style::new().add_modifier(Modifier::DIM)
+    }
 }
 
 fn draw_detail(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
@@ -866,6 +900,16 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>()
+    }
+
+    #[test]
+    fn truncates_subjects_on_display_columns() {
+        assert_eq!(truncate_line("项目进度汇报", 20), "项目进度汇报");
+        assert_eq!(truncate_line("项目进度汇报", 7), "项目进…");
+        assert_eq!(truncate_line("abcdef", 5), "abcd…");
+        assert_eq!(truncate_line("abcde", 5), "abcde");
+        assert_eq!(truncate_line("中文abc", 5), "中文…");
+        assert_eq!(truncate_line("abc", 0), "");
     }
 
     #[test]
