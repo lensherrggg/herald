@@ -8,9 +8,9 @@ use herald_core::model::{
 };
 use herald_core::paths::ResolvedPaths;
 use herald_core::{Config, Herald};
-use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::DefaultTerminal;
 use tokio::runtime::Runtime;
+use unicode_width::UnicodeWidthChar;
 
 use crate::browser::{sanitize_filename, Browser};
 use crate::ui;
@@ -62,6 +62,14 @@ pub struct SearchState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawMatch {
+    pub line: usize,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// A display row of the raw view: a byte range inside one source line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawRow {
     pub line: usize,
     pub start: usize,
     pub end: usize,
@@ -1303,42 +1311,97 @@ fn find_from(line: &str, from: usize, query: &str) -> Option<usize> {
     }
 }
 
-/// Rendered row (after word wrapping) of a match, used to scroll it into view.
-pub fn raw_match_row(text: &str, matched: &RawMatch, width: u16) -> u16 {
-    let width = width.max(1);
-    let mut row = 0usize;
+/// Wrap the normalized raw text into terminal rows. Breaks at spaces and
+/// between CJK characters, so Chinese paragraphs fill each row instead of
+/// pushing a whole run to the next line; overlong ASCII tokens hard-wrap.
+pub fn raw_rows(text: &str, width: u16) -> Vec<RawRow> {
+    let width = width.max(1) as usize;
+    let mut rows = Vec::new();
     for (line, content) in text.lines().enumerate() {
-        if line == matched.line {
-            let prefix = content.get(..matched.start).unwrap_or("");
-            let rest = content.get(matched.start..).unwrap_or("");
-            row += prefix_rows(prefix, rest, width);
-            break;
+        if content.is_empty() {
+            rows.push(RawRow {
+                line,
+                start: 0,
+                end: 0,
+            });
+            continue;
         }
-        row += wrapped_rows(content, width);
+        let mut start = 0;
+        while start < content.len() {
+            let mut end = start;
+            let mut row_width = 0usize;
+            let mut last_break = None;
+            let mut overflowed = false;
+            for (offset, ch) in content[start..].char_indices() {
+                let index = start + offset;
+                let ch_width = ch.width().unwrap_or(0);
+                if row_width + ch_width > width && row_width > 0 {
+                    overflowed = true;
+                    break;
+                }
+                row_width += ch_width;
+                end = index + ch.len_utf8();
+                let next = content[end..].chars().next();
+                if break_allowed(ch, next) {
+                    last_break = Some(end);
+                }
+            }
+            let row_end = if overflowed {
+                last_break.unwrap_or(end)
+            } else {
+                end
+            };
+            let row_end = if row_end > start {
+                row_end
+            } else {
+                content[start..]
+                    .chars()
+                    .next()
+                    .map(|ch| start + ch.len_utf8())
+                    .unwrap_or(content.len())
+            };
+            rows.push(RawRow {
+                line,
+                start,
+                end: row_end,
+            });
+            start = row_end;
+        }
     }
-    row.min(u16::MAX as usize) as u16
+    rows
 }
 
-/// Rows consumed by `prefix`, walking the same word wrapper as the raw view.
-/// `rest` is the text from the match onward; the whole word it starts with is
-/// taken into account so a word pushed to the next row is located correctly.
-fn prefix_rows(prefix: &str, rest: &str, width: u16) -> usize {
-    let rows = wrapped_rows(prefix, width);
-    if rest.is_empty() {
-        return rows - 1;
-    }
-    let word_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-    let mut extended = String::with_capacity(prefix.len() + word_end);
-    extended.push_str(prefix);
-    extended.push_str(&rest[..word_end]);
-    rows - 1 + usize::from(wrapped_rows(&extended, width) > rows)
+fn break_allowed(after: char, next: Option<char>) -> bool {
+    after.is_whitespace() || is_wide_script(after) || next.is_some_and(is_wide_script)
 }
 
-fn wrapped_rows(line: &str, width: u16) -> usize {
-    Paragraph::new(line.to_string())
-        .wrap(Wrap { trim: false })
-        .line_count(width.max(1))
-        .max(1)
+fn is_wide_script(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x1100..=0x11FF
+            | 0x2E80..=0x2FFF
+            | 0x3000..=0x303F
+            | 0x3040..=0x30FF
+            | 0x3100..=0x31FF
+            | 0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xA960..=0xA97F
+            | 0xAC00..=0xD7FF
+            | 0xF900..=0xFAFF
+            | 0xFE30..=0xFE4F
+            | 0xFF00..=0xFFEF
+            | 0x1B000..=0x1B16F
+            | 0x20000..=0x3FFFF
+    )
+}
+
+/// Rendered row of a match, used to scroll it into view.
+pub fn raw_match_row(text: &str, matched: &RawMatch, width: u16) -> u16 {
+    raw_rows(text, width)
+        .iter()
+        .position(|row| row.line == matched.line && matched.start < row.end)
+        .unwrap_or(0)
+        .min(u16::MAX as usize) as u16
 }
 
 fn prepare_raw(bytes: &[u8], limit: usize) -> (String, bool) {
@@ -1542,5 +1605,52 @@ mod tests {
         let found = raw_matches(words, "cccc");
         assert_eq!(found[0].start, at);
         assert_eq!(raw_match_row(words, &found[0], 8), 2);
+    }
+
+    #[test]
+    fn raw_rows_fill_cjk_lines_without_orphaning_labels() {
+        let text = format!("第 01 段：{}", "中文长文本测试。".repeat(20));
+        let rows = raw_rows(&text, 40);
+        assert!(rows.len() > 1);
+        let first = &text[rows[0].start..rows[0].end];
+        assert!(first.contains("第 01 段："), "{first}");
+        for row in &rows {
+            let piece = &text[row.start..row.end];
+            let width: usize = piece.chars().map(|ch| ch.width().unwrap_or(0)).sum();
+            assert!(width <= 40, "row wider than 40 columns: {width} {piece:?}");
+        }
+        let joined: String = rows.iter().map(|row| &text[row.start..row.end]).collect();
+        assert_eq!(joined, text);
+
+        let at = text.find("测试").unwrap();
+        let found = RawMatch {
+            line: 0,
+            start: at,
+            end: at + "测试".len(),
+        };
+        let row = raw_match_row(&text, &found, 40) as usize;
+        let shown = &text[rows[row].start..rows[row].end];
+        assert!(shown.contains("测试"), "{shown}");
+    }
+
+    #[test]
+    fn raw_rows_keep_short_header_lines_intact() {
+        let text = "Date: Sat, 14 Sep 2024 10:30:00 +0800\n第二行";
+        let rows = raw_rows(text, 78);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            &text[rows[0].start..rows[0].end],
+            "Date: Sat, 14 Sep 2024 10:30:00 +0800"
+        );
+    }
+
+    #[test]
+    fn raw_rows_hard_wrap_unbroken_ascii() {
+        let text = "A".repeat(100);
+        let rows = raw_rows(&text, 40);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].end - rows[0].start, 40);
+        assert_eq!(rows[1].end - rows[1].start, 40);
+        assert_eq!(rows[2].end - rows[2].start, 20);
     }
 }

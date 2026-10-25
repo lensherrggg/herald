@@ -7,8 +7,8 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use crate::app::{
-    attachment_line, body_text, format_size, join_addrs, sender_short, shorten_date, App, Focus,
-    Mode,
+    attachment_line, body_text, format_size, join_addrs, raw_rows, sender_short, shorten_date, App,
+    Focus, Mode,
 };
 use crate::browser::Browser;
 use herald_core::model::{SearchField, SearchKind};
@@ -470,16 +470,15 @@ fn draw_raw(frame: &mut Frame, app: &App) {
     } else {
         (raw_area, None)
     };
-    app.raw_width
-        .set(content_area.width.saturating_sub(2).max(1));
+    let inner_width = content_area.width.saturating_sub(2).max(1);
+    app.raw_width.set(inner_width);
     let title = if app.raw_truncated {
         " 原始邮件（已截断）· Esc 返回 "
     } else {
         " 原始邮件 · Esc 返回 "
     };
-    let paragraph = Paragraph::new(raw_text(app))
+    let paragraph = Paragraph::new(raw_text(app, inner_width))
         .block(panel(title, true, app))
-        .wrap(Wrap { trim: false })
         .scroll((app.raw_scroll, 0));
     frame.render_widget(paragraph, content_area);
     if let Some(area) = input_area {
@@ -487,45 +486,58 @@ fn draw_raw(frame: &mut Frame, app: &App) {
     }
 }
 
-fn raw_text(app: &App) -> Text<'static> {
+fn raw_text(app: &App, width: u16) -> Text<'static> {
     let raw = app.raw.as_deref().unwrap_or("");
-    let Some(search) = &app.raw_search else {
-        return Text::from(raw.to_string());
-    };
-    if search.matches.is_empty() {
-        return Text::from(raw.to_string());
-    }
-    let mut lines = Vec::new();
+    let rows = raw_rows(raw, width);
+    let source: Vec<&str> = raw.lines().collect();
+    let search = app
+        .raw_search
+        .as_ref()
+        .filter(|search| !search.matches.is_empty());
+    let mut lines = Vec::with_capacity(rows.len());
     let mut cursor = 0usize;
-    for (line_index, content) in raw.lines().enumerate() {
-        while cursor < search.matches.len() && search.matches[cursor].line < line_index {
-            cursor += 1;
-        }
-        let first_match = cursor;
-        while cursor < search.matches.len() && search.matches[cursor].line == line_index {
-            cursor += 1;
-        }
-        let line_matches = &search.matches[first_match..cursor];
-        if line_matches.is_empty() {
-            lines.push(Line::from(content.to_string()));
+    for row in &rows {
+        let content = source.get(row.line).copied().unwrap_or("");
+        let Some(search) = search else {
+            lines.push(Line::from(content[row.start..row.end].to_string()));
             continue;
+        };
+        while cursor < search.matches.len() && search.matches[cursor].line < row.line {
+            cursor += 1;
         }
         let mut spans = Vec::new();
-        let mut position = 0usize;
-        for (offset, matched) in line_matches.iter().enumerate() {
-            if matched.start > position {
-                spans.push(Span::raw(content[position..matched.start].to_string()));
+        let mut position = row.start;
+        let mut scan = cursor;
+        while scan < search.matches.len()
+            && search.matches[scan].line == row.line
+            && search.matches[scan].start < row.end
+        {
+            let matched = &search.matches[scan];
+            if matched.end > row.start {
+                let from = matched.start.max(row.start);
+                let to = matched.end.min(row.end);
+                if from > position {
+                    spans.push(Span::raw(content[position..from].to_string()));
+                }
+                spans.push(Span::styled(
+                    content[from..to].to_string(),
+                    raw_match_style(app, scan == search.current),
+                ));
+                position = to;
             }
-            spans.push(Span::styled(
-                content[matched.start..matched.end].to_string(),
-                raw_match_style(app, first_match + offset == search.current),
-            ));
-            position = matched.end;
+            scan += 1;
         }
-        if position < content.len() {
-            spans.push(Span::raw(content[position..].to_string()));
+        if position < row.end {
+            spans.push(Span::raw(content[position..row.end].to_string()));
         }
         lines.push(Line::from(spans));
+        while cursor < search.matches.len()
+            && (search.matches[cursor].line < row.line
+                || (search.matches[cursor].line == row.line
+                    && search.matches[cursor].end <= row.end))
+        {
+            cursor += 1;
+        }
     }
     Text::from(lines)
 }

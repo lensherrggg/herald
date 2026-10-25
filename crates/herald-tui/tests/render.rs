@@ -110,6 +110,21 @@ fn compact(text: &str) -> String {
     text.chars().filter(|ch| !ch.is_whitespace()).collect()
 }
 
+fn render_rows(app: &App, width: u16, height: u16) -> Vec<String> {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+    terminal
+        .draw(|frame| ui::draw(frame, app))
+        .expect("draw frame");
+    let buffer = terminal.backend().buffer();
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
+                .collect()
+        })
+        .collect()
+}
+
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
@@ -619,4 +634,46 @@ fn raw_view_searches_keywords_and_keeps_the_input_at_the_bottom() {
     assert!(matches!(app.mode, herald_tui::app::Mode::Browse));
     assert!(app.raw_search.is_none());
     assert!(app.raw.is_none());
+}
+
+#[test]
+fn raw_view_wraps_long_cjk_lines_without_splitting_labels() {
+    let (mut app, _dir) = synced_app(20, vec![message_one()]);
+    let body = format!("第 01 段：{}", "中文长文本测试。".repeat(20));
+    app.raw = Some(format!("Subject: 原文折行\n{body}"));
+    app.raw_truncated = false;
+    app.mode = herald_tui::app::Mode::Raw;
+
+    let rows = render_rows(&app, 80, 30);
+    let screen = rows.join("\n");
+    let compacted = compact(&screen);
+    assert!(compacted.contains("第01段：中文"), "{screen}");
+    assert!(!compacted.contains("第01│段"), "{screen}");
+    assert!(compacted.contains("Subject:原文折行"), "{screen}");
+
+    app.handle_key(key(KeyCode::Char('/')));
+    for ch in "测试".chars() {
+        app.handle_key(key(KeyCode::Char(ch)));
+    }
+    let search = app.raw_search.as_ref().expect("raw search");
+    assert_eq!(search.matches.len(), 20);
+    assert_eq!(search.current, 0);
+
+    let rows = render_rows(&app, 80, 30);
+    let screen = rows.join("\n");
+    assert!(screen.contains("1/20"), "{screen}");
+    let content = rows[1]
+        .strip_prefix('│')
+        .and_then(|row| row.strip_suffix('│'))
+        .expect("bordered raw row");
+    let content_text = compact(content);
+    assert!(content_text.contains("第01段："), "{screen}");
+    assert!(
+        content_text.contains("测试"),
+        "current match row must be visible:\n{screen}"
+    );
+    assert!(
+        content.chars().count() <= 78,
+        "content row wider than the inner width:\n{screen}"
+    );
 }
