@@ -193,7 +193,10 @@ mod tests {
     #[test]
     fn missing_model_is_reported() {
         let temp = tempfile::tempdir().unwrap();
-        let err = load_model(temp.path()).unwrap_err();
+        let err = match load_model(temp.path()) {
+            Err(err) => err,
+            Ok(_) => panic!("expected a missing model error"),
+        };
         assert!(matches!(err, HeraldError::Model(_)));
     }
 }
