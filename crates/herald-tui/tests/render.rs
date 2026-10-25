@@ -452,6 +452,11 @@ fn honors_configured_page_size() {
     assert_eq!(app.messages[0].uidl, "m2");
     let first = compact(&render(&app, 120, 40));
     assert!(first.contains("第1/2页"), "{first}");
+    assert_eq!(
+        first.matches("第1/2页").count(),
+        1,
+        "page indicator must appear once:\n{first}"
+    );
 
     app.handle_key(key(KeyCode::PageDown));
     assert_eq!(app.page, 1);

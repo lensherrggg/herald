@@ -53,8 +53,9 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         .unwrap_or("从未同步");
     let sort_arrow = if app.descending { "↓" } else { "↑" };
     let title = format!(
-        " Herald · {account} · 共 {} 封 · 第 {}/{} 页 · 排序 {}{} · 同步 {last_sync} ",
+        " Herald · {account} · 共 {} 封 · 未读 {} · 第 {}/{} 页 · 排序 {}{} · 同步 {last_sync} ",
         app.total,
+        app.unread_total,
         app.page + 1,
         app.page_count(),
         app.sort.label(),
@@ -84,22 +85,18 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
     let sort_arrow = if app.descending { "↓" } else { "↑" };
     let title = match &app.search {
         Some(search) => format!(
-            "{} {}搜索（{}）：{} · {} 条 · {} ",
+            "{} {}搜索（{}）：{} · {} 条 ",
             focus_marker(focused),
             search.label(),
             search.field.label(),
             search.query,
-            app.total,
-            app.page + 1
+            app.total
         ),
         None => format!(
-            "{} 邮件 · {}{} · 未读 {} · 第 {}/{} 页 ",
+            "{} 邮件 · {}{} ",
             focus_marker(focused),
             app.sort.label(),
-            sort_arrow,
-            app.unread_total,
-            app.page + 1,
-            app.page_count()
+            sort_arrow
         ),
     };
     let block = panel(title, focused, app);
