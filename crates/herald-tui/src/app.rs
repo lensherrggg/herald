@@ -13,6 +13,7 @@ use tokio::runtime::Runtime;
 use unicode_width::UnicodeWidthChar;
 
 use crate::browser::{sanitize_filename, Browser};
+use crate::text_input;
 use crate::ui;
 
 pub const RAW_VIEW_LIMIT: usize = 256 * 1024;
@@ -27,6 +28,7 @@ pub enum InputKind {
 pub struct InputState {
     pub kind: InputKind,
     pub value: String,
+    pub cursor: usize,
     pub search_kind: Option<SearchKind>,
     pub search_field: Option<SearchField>,
 }
@@ -78,6 +80,7 @@ pub struct RawRow {
 #[derive(Debug)]
 pub struct RawSearch {
     pub query: String,
+    pub cursor: usize,
     pub matches: Vec<RawMatch>,
     pub current: usize,
     pub editing: bool,
@@ -762,6 +765,7 @@ impl App {
                 self.mode = Mode::Input(InputState {
                     kind: InputKind::Search,
                     value: String::new(),
+                    cursor: 0,
                     search_kind: Some(kind),
                     search_field: Some(SearchField::All),
                 })
@@ -860,14 +864,39 @@ impl App {
                     }
                 }
             }
+            KeyCode::Left => {
+                if let Mode::Input(state) = &mut self.mode {
+                    state.cursor = text_input::prev_cursor(&state.value, state.cursor);
+                }
+            }
+            KeyCode::Right => {
+                if let Mode::Input(state) = &mut self.mode {
+                    state.cursor = text_input::next_cursor(&state.value, state.cursor);
+                }
+            }
+            KeyCode::Home => {
+                if let Mode::Input(state) = &mut self.mode {
+                    state.cursor = 0;
+                }
+            }
+            KeyCode::End => {
+                if let Mode::Input(state) = &mut self.mode {
+                    state.cursor = state.value.len();
+                }
+            }
             KeyCode::Backspace => {
                 if let Mode::Input(state) = &mut self.mode {
-                    state.value.pop();
+                    text_input::backspace(&mut state.value, &mut state.cursor);
+                }
+            }
+            KeyCode::Delete => {
+                if let Mode::Input(state) = &mut self.mode {
+                    text_input::delete(&mut state.value, &mut state.cursor);
                 }
             }
             KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Mode::Input(state) = &mut self.mode {
-                    state.value.push(ch);
+                    text_input::insert_char(&mut state.value, &mut state.cursor, ch);
                 }
             }
             _ => {}
@@ -951,11 +980,28 @@ impl App {
             match key.code {
                 KeyCode::Enter => self.export_to_filename(),
                 KeyCode::Esc | KeyCode::Tab => browser.unfocus_filename(),
+                KeyCode::Left => {
+                    browser.filename_cursor =
+                        text_input::prev_cursor(&browser.filename, browser.filename_cursor);
+                }
+                KeyCode::Right => {
+                    browser.filename_cursor =
+                        text_input::next_cursor(&browser.filename, browser.filename_cursor);
+                }
+                KeyCode::Home => browser.filename_cursor = 0,
+                KeyCode::End => browser.filename_cursor = browser.filename.len(),
                 KeyCode::Backspace => {
-                    browser.filename.pop();
+                    text_input::backspace(&mut browser.filename, &mut browser.filename_cursor)
+                }
+                KeyCode::Delete => {
+                    text_input::delete(&mut browser.filename, &mut browser.filename_cursor);
                 }
                 KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    browser.filename.push(ch);
+                    text_input::insert_char(
+                        &mut browser.filename,
+                        &mut browser.filename_cursor,
+                        ch,
+                    );
                 }
                 _ => {}
             }
@@ -977,6 +1023,7 @@ impl App {
                 self.mode = Mode::Input(InputState {
                     kind: InputKind::NewDir,
                     value: String::new(),
+                    cursor: 0,
                     search_kind: None,
                     search_field: None,
                 })
@@ -1060,15 +1107,41 @@ impl App {
                 }
             }
             KeyCode::Enter => self.step_raw_match(true),
+            KeyCode::Left => {
+                if let Some(search) = &mut self.raw_search {
+                    search.cursor = text_input::prev_cursor(&search.query, search.cursor);
+                }
+            }
+            KeyCode::Right => {
+                if let Some(search) = &mut self.raw_search {
+                    search.cursor = text_input::next_cursor(&search.query, search.cursor);
+                }
+            }
+            KeyCode::Home => {
+                if let Some(search) = &mut self.raw_search {
+                    search.cursor = 0;
+                }
+            }
+            KeyCode::End => {
+                if let Some(search) = &mut self.raw_search {
+                    search.cursor = search.query.len();
+                }
+            }
             KeyCode::Backspace => {
                 if let Some(search) = &mut self.raw_search {
-                    search.query.pop();
+                    text_input::backspace(&mut search.query, &mut search.cursor);
+                }
+                self.refresh_raw_search(true);
+            }
+            KeyCode::Delete => {
+                if let Some(search) = &mut self.raw_search {
+                    text_input::delete(&mut search.query, &mut search.cursor);
                 }
                 self.refresh_raw_search(true);
             }
             KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(search) = &mut self.raw_search {
-                    search.query.push(ch);
+                    text_input::insert_char(&mut search.query, &mut search.cursor, ch);
                 }
                 self.refresh_raw_search(true);
             }
@@ -1082,6 +1155,7 @@ impl App {
         }
         self.raw_search = Some(RawSearch {
             query: String::new(),
+            cursor: 0,
             matches: Vec::new(),
             current: 0,
             editing: true,

@@ -14,6 +14,7 @@ pub struct Browser {
     pub entries: Vec<BrowserEntry>,
     pub selected: usize,
     pub filename: String,
+    pub filename_cursor: usize,
     pub filename_focus: bool,
     pub uidl: String,
     pub attachment_index: usize,
@@ -34,6 +35,7 @@ impl Browser {
             entries: Vec::new(),
             selected: 0,
             filename: original_name.clone(),
+            filename_cursor: original_name.len(),
             filename_focus: false,
             uidl,
             attachment_index,
@@ -92,11 +94,13 @@ impl Browser {
             self.refresh();
         } else {
             self.filename = entry.name;
+            self.filename_cursor = self.filename.len();
             self.filename_focus = true;
         }
     }
 
     pub fn focus_filename(&mut self) {
+        self.filename_cursor = self.filename.len();
         self.filename_focus = true;
     }
 

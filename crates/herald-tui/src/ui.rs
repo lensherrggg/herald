@@ -295,8 +295,13 @@ fn draw_input(frame: &mut Frame, app: &App, state: &crate::app::InputState) {
         Some(field) => format!(" {} · {} ", state.label(), field),
         None => format!(" {} ", state.label()),
     };
+    let (before, after) = crate::text_input::split_at(&state.value, state.cursor);
     let text = Text::from(vec![
-        Line::from(Span::styled(format!("{}█", state.value), accent(app))),
+        Line::from(vec![
+            Span::styled(before.to_string(), accent(app)),
+            Span::styled("█", accent(app)),
+            Span::styled(after.to_string(), accent(app)),
+        ]),
         Line::from(Span::styled(hint, Style::new().add_modifier(Modifier::DIM))),
     ]);
     let paragraph = Paragraph::new(text)
@@ -428,7 +433,8 @@ fn draw_browser(frame: &mut Frame, app: &App) {
     } else {
         Style::new()
     };
-    let filename = Line::from(vec![
+    let (before, after) = crate::text_input::split_at(&browser.filename, browser.filename_cursor);
+    let mut filename_spans = vec![
         Span::styled(
             if browser.filename_focus {
                 "文件名（编辑中）："
@@ -437,9 +443,13 @@ fn draw_browser(frame: &mut Frame, app: &App) {
             },
             Style::new().add_modifier(Modifier::DIM),
         ),
-        Span::styled(browser.filename.clone(), filename_style),
-        Span::styled(if browser.filename_focus { "█" } else { "" }, accent(app)),
-    ]);
+        Span::styled(before.to_string(), filename_style),
+    ];
+    if browser.filename_focus {
+        filename_spans.push(Span::styled("█", accent(app)));
+    }
+    filename_spans.push(Span::styled(after.to_string(), filename_style));
+    let filename = Line::from(filename_spans);
     frame.render_widget(Paragraph::new(filename), chunks[1]);
 
     let note = browser
@@ -581,10 +591,12 @@ fn draw_raw_search(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         "Enter 下一个 · Esc 完成"
     };
+    let (before, after) = crate::text_input::split_at(&search.query, search.cursor);
     let line = Line::from(vec![
         Span::styled(" 查找: ", Style::new().add_modifier(Modifier::BOLD)),
-        Span::raw(search.query.clone()),
+        Span::raw(before.to_string()),
         Span::styled("█", accent(app)),
+        Span::raw(after.to_string()),
         Span::styled(
             format!("  {count}  {hint}"),
             Style::new().add_modifier(Modifier::DIM),

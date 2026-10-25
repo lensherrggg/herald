@@ -1,5 +1,6 @@
 pub mod app;
 pub mod browser;
+mod text_input;
 pub mod ui;
 
 use std::path::PathBuf;

@@ -5,6 +5,7 @@ use herald_core::mock_pop3::{MockConfig, MockMessage, MockPop3Server};
 use herald_core::model::{MessageDetail, MessageHeader, SearchField, SearchKind, SyncOptions};
 use herald_core::Herald;
 use herald_tui::app::{App, Focus};
+use herald_tui::browser::Browser;
 use herald_tui::ui;
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
@@ -771,4 +772,65 @@ fn raw_view_pages_by_the_visible_height() {
 
     app.handle_key(key(KeyCode::Char('g')));
     assert_eq!(app.raw_scroll, 0);
+}
+
+#[test]
+fn text_fields_allow_moving_the_caret() {
+    let (mut app, dir) = synced_app(20, vec![message_one()]);
+
+    app.handle_key(key(KeyCode::Char('/')));
+    for ch in "会议".chars() {
+        app.handle_key(key(KeyCode::Char(ch)));
+    }
+    app.handle_key(key(KeyCode::Left));
+    app.handle_key(key(KeyCode::Char('新')));
+    match &app.mode {
+        herald_tui::app::Mode::Input(state) => {
+            assert_eq!(state.value, "会新议");
+            assert_eq!(state.cursor, "会新".len());
+        }
+        _ => panic!("expected search input"),
+    }
+    app.handle_key(key(KeyCode::Backspace));
+    match &app.mode {
+        herald_tui::app::Mode::Input(state) => {
+            assert_eq!(state.value, "会议");
+            assert_eq!(state.cursor, "会".len());
+        }
+        _ => panic!("expected search input"),
+    }
+    app.handle_key(key(KeyCode::Esc));
+
+    app.raw = Some("Subject: 中文\n".to_string());
+    app.raw_truncated = false;
+    app.mode = herald_tui::app::Mode::Raw;
+    app.handle_key(key(KeyCode::Char('/')));
+    for ch in "会议".chars() {
+        app.handle_key(key(KeyCode::Char(ch)));
+    }
+    app.handle_key(key(KeyCode::Left));
+    app.handle_key(key(KeyCode::Char('新')));
+    let search = app.raw_search.as_ref().expect("raw search");
+    assert_eq!(search.query, "会新议");
+    assert_eq!(search.cursor, "会新".len());
+    app.handle_key(key(KeyCode::Backspace));
+    assert_eq!(app.raw_search.as_ref().unwrap().query, "会议");
+
+    let exports = dir.path().join("exports");
+    std::fs::create_dir_all(&exports).unwrap();
+    app.browser = Some(Browser::new(
+        exports,
+        "m1".to_string(),
+        0,
+        "报告.pdf".to_string(),
+    ));
+    app.mode = herald_tui::app::Mode::Browser;
+    app.handle_key(key(KeyCode::Char('f')));
+    app.handle_key(key(KeyCode::Home));
+    app.handle_key(key(KeyCode::Right));
+    app.handle_key(key(KeyCode::Right));
+    app.handle_key(key(KeyCode::Char('新')));
+    let browser = app.browser.as_ref().expect("browser");
+    assert_eq!(browser.filename, "报告新.pdf");
+    assert_eq!(browser.filename_cursor, "报告新".len());
 }
