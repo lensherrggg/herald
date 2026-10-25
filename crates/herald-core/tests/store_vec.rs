@@ -62,6 +62,12 @@ fn fts_index_is_replaced_and_searchable() {
     let result = store.keyword_search(account_id, "正常", 10, 0).unwrap();
     assert_eq!(result.total, 1);
 
+    // Tokens separated by a space must hit FTS rather than the LIKE fallback.
+    let result = store
+        .keyword_search(account_id, "项目 进度", 10, 0)
+        .unwrap();
+    assert_eq!(result.total, 1);
+
     // Replacing the body must not duplicate or keep stale FTS terms.
     store
         .set_body(first, Some("无关内容"), None, "无关 内容")

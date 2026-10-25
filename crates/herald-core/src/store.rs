@@ -578,9 +578,9 @@ impl Store {
     ) -> Result<SearchResult> {
         let total: i64 = self.conn.query_row(
             r#"
-            SELECT COUNT(*) FROM messages_fts f
-            JOIN messages m ON m.id = f.rowid
-            WHERE f MATCH ?1 AND m.account_id = ?2
+            SELECT COUNT(*) FROM messages_fts
+            JOIN messages m ON m.id = messages_fts.rowid
+            WHERE messages_fts MATCH ?1 AND m.account_id = ?2
             "#,
             params![fts_query, account_id],
             |row| row.get(0),
@@ -588,10 +588,10 @@ impl Store {
         let mut stmt = self.conn.prepare(
             r#"
             SELECT m.uidl, m.subject, m.from_addr, m.date, COALESCE(m.size, 0)
-            FROM messages_fts f
-            JOIN messages m ON m.id = f.rowid
-            WHERE f MATCH ?1 AND m.account_id = ?2
-            ORDER BY bm25(f), m.date DESC
+            FROM messages_fts
+            JOIN messages m ON m.id = messages_fts.rowid
+            WHERE messages_fts MATCH ?1 AND m.account_id = ?2
+            ORDER BY bm25(messages_fts), m.date DESC
             LIMIT ?3 OFFSET ?4
             "#,
         )?;
