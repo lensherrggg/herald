@@ -1106,3 +1106,26 @@ fn list_dates_are_readable_gray_in_color_mode() {
     }
     assert!(found, "list date row not rendered");
 }
+
+#[test]
+fn long_filter_paths_keep_the_jump_hint_visible() {
+    let (mut app, dir) = synced_app(20, vec![message_one()]);
+    let exports = dir.path().join("exports");
+    let target = exports.join("这是一个特别长的目录名称用于验证提示不会被截断");
+    std::fs::create_dir_all(&target).unwrap();
+    app.browser = Some(Browser::new(
+        exports,
+        "m1".to_string(),
+        0,
+        "a.bin".to_string(),
+    ));
+    app.mode = herald_tui::app::Mode::Browser;
+
+    app.handle_key(key(KeyCode::Char('/')));
+    for ch in target.to_string_lossy().chars() {
+        app.handle_key(key(KeyCode::Char(ch)));
+    }
+    assert!(app.browser.as_ref().unwrap().filter_jump_target().is_some());
+    let screen = compact(&render(&app, 100, 40));
+    assert!(screen.contains("Enter跳转"), "{screen}");
+}

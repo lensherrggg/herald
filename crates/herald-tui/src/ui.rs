@@ -495,9 +495,13 @@ fn draw_browser(frame: &mut Frame, app: &App) {
     let filename = Line::from(filename_spans);
     frame.render_widget(Paragraph::new(filename), chunks[filename_chunk]);
 
-    let note = browser.note.clone().unwrap_or_else(|| {
-        "Enter 进入/选文件 · 退格 上级 · z 跳转 · / 筛选 · d 存入当前目录 · f 改名".to_string()
-    });
+    let note = browser
+        .note
+        .clone()
+        .or_else(|| show_filter.then(|| filter_status(browser)))
+        .unwrap_or_else(|| {
+            "Enter 进入/选文件 · 退格 上级 · z 跳转 · / 筛选 · d 存入当前目录 · f 改名".to_string()
+        });
     frame.render_widget(
         Paragraph::new(Span::styled(
             note,
@@ -565,9 +569,9 @@ fn draw_browser_jump(frame: &mut Frame, app: &App, browser: &Browser) {
     frame.render_stateful_widget(list, chunks[1], &mut state);
 }
 
-fn draw_browser_filter(frame: &mut Frame, app: &App, browser: &Browser, area: Rect) {
-    let (before, after) = crate::text_input::split_at(&browser.filter, browser.filter_cursor);
-    let count = browser.filter_count();
+/// Filter count and the next action live on the note line: a long absolute
+/// path can otherwise push the hint past the right edge of the filter row.
+fn filter_status(browser: &Browser) -> String {
     let hint = if !browser.filtering {
         "/ 编辑 · Esc 清除"
     } else if browser.filter_jump_target().is_some() {
@@ -575,6 +579,11 @@ fn draw_browser_filter(frame: &mut Frame, app: &App, browser: &Browser, area: Re
     } else {
         "Enter 确定 · Esc 清除"
     };
+    format!("{} 项 · {hint}", browser.filter_count())
+}
+
+fn draw_browser_filter(frame: &mut Frame, app: &App, browser: &Browser, area: Rect) {
+    let (before, after) = crate::text_input::split_at(&browser.filter, browser.filter_cursor);
     let mut spans = vec![Span::styled(
         " 筛选: ",
         Style::new().add_modifier(Modifier::BOLD),
@@ -586,10 +595,6 @@ fn draw_browser_filter(frame: &mut Frame, app: &App, browser: &Browser, area: Re
     } else {
         spans.push(Span::raw(browser.filter.clone()));
     }
-    spans.push(Span::styled(
-        format!("  {count} 项  {hint}"),
-        Style::new().add_modifier(Modifier::DIM),
-    ));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
