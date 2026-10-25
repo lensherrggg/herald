@@ -4,10 +4,6 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[[bin]]
-name = "herald-tui"
-path = "src/main.rs"
-
 [dependencies]
 herald-core = { workspace = true, features = ["semantic"] }
 anyhow.workspace = true

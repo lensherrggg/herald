@@ -1104,6 +1104,7 @@ dependencies = [
  "anyhow",
  "clap",
  "herald-core",
+ "herald-tui",
  "serde",
  "serde_json",
  "tempfile",

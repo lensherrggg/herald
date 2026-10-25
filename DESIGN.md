@@ -12,7 +12,7 @@ Herald 解决的是「让 Agent 稳定、受控、低 token 地读内网 POP3 �
 - 只读收信，绝不删除、标记、移动或发信。
 - 本地 SQLite 缓存，UIDL 增量同步，支持离线重复读取。
 - 中文友好的关键词搜索与本地语义搜索。
-- 同一套 core 同时服务 MCP、CLI、TUI；CLI/TUI 不绕道 MCP。
+- 同一套 core 同时服务 MCP、CLI、TUI；TUI 编入 CLI 二进制，且不绕道 MCP。
 - 便携部署：配置、数据库、模型默认随可执行文件目录。
 
 明确不做：IMAP、SMTP、多用户权限、定时后台任务、MCP 附件能力。`Herald::sync` 是可被外部调度器复用的入口，但本项目不启动任何后台循环。
@@ -22,16 +22,17 @@ Herald 解决的是「让 Agent 稳定、受控、低 token 地读内网 POP3 �
 ## 2. 分层与模块
 
 ```
-                 ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-                 │  herald-cli  │  │  herald-mcp  │  │  herald-tui  │
-                 │  clap/json   │  │ stdio/MCP    │  │ ratatui      │
-                 └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
-                        └─────────────────┼─────────────────┘
-                                          ▼
-                                  ┌───────────────┐
-                                  │  herald-core  │
-                                  │  Herald facade│
-                                  └───────┬───────┘
+                 ┌──────────────────────┐  ┌──────────────┐
+                 │      herald-cli      │  │  herald-mcp  │
+                 │ clap/json + ratatui  │  │  stdio/MCP   │
+                 │  └─ herald-tui (lib) │  │              │
+                 └──────────┬───────────┘  └──────┬───────┘
+                            └───────────┬─────────┘
+                                        ▼
+                                ┌───────────────┐
+                                │  herald-core  │
+                                │  Herald facade│
+                                └───────┬───────┘
         ┌──────────┬──────────┬───────────┼───────────┬──────────┬──────────┐
         ▼          ▼          ▼           ▼           ▼          ▼          ▼
      config     paths       pop3        parse       sync       store     search
@@ -62,9 +63,9 @@ Herald 解决的是「让 Agent 稳定、受控、低 token 地读内网 POP3 �
 
 ### 2.2 入口层
 
-- **CLI**：clap 解析，所有命令共用 `Herald`；`--json` 输出便于脚本。
+- **CLI**：唯一的人用可执行文件，clap 解析；所有命令共用 `Herald`，`--json` 便于脚本。
 - **MCP**：`rust-mcp-sdk` + `#[mcp_tool]`；一个 `Mutex<Herald>` 串行化工具调用；不编译 `semantic`。
-- **TUI**：ratatui + crossterm，同步阻塞调用放在专用 tokio Runtime 上，UI 状态全部集中在 `App`。
+- **TUI**：`herald-tui` 只提供库，由 `herald tui` 子命令调用。`main` 保持同步，TUI 分支在创建 Tokio Runtime 之前执行，避免嵌套运行时；普通命令再各自建运行时。
 
 ---
 
@@ -272,6 +273,8 @@ download(options)
 ---
 
 ## 11. TUI 设计
+
+TUI 以 `herald-tui` 库的形式编译进 `herald`，入口为 `herald tui [--account <name>]`，不再单独生成可执行文件。ratatui + crossterm 负责渲染，同步阻塞调用放在 App 持有的专用 Tokio Runtime 上，UI 状态全部集中在 `App`。
 
 ### 11.1 状态机
 

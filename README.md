@@ -38,14 +38,14 @@ herald/
 │   ├── herald-core/           # 全部业务逻辑（无入口层依赖）
 │   ├── herald-cli/            # herald 命令
 │   ├── herald-mcp/            # herald-mcp stdio server
-│   └── herald-tui/            # herald-tui 终端界面
+│   └── herald-tui/            # TUI 库（由 herald tui 调用）
 ├── vendor/sqlite-vec/         # 内置 sqlite-vec（静态编译，无需系统扩展）
 ├── .github/workflows/ci.yml   # 三平台 fmt + clippy + test
 ├── DESIGN.md                  # 架构与实现说明
 └── README.md
 ```
 
-`herald-core` 不依赖 CLI/TUI/MCP；三个入口都直接复用它，CLI/TUI 不经过 MCP。
+`herald-core` 不依赖入口层；可执行文件只有 `herald` 与 `herald-mcp`，TUI 作为库由 `herald tui` 启动，不经过 MCP。
 
 ---
 
@@ -60,9 +60,8 @@ cargo build --release --workspace
 产物：
 
 ```
-target/release/herald(.exe)
+target/release/herald(.exe)       # CLI + TUI
 target/release/herald-mcp(.exe)
-target/release/herald-tui(.exe)
 ```
 
 只构建不带语义检索的 core：
@@ -170,8 +169,10 @@ HF_ENDPOINT=https://hf-mirror.example ./target/release/herald models download
 ### 4.4 TUI
 
 ```bash
-./target/release/herald-tui [--config <path>] [--account <name>]
+./target/release/herald tui [--config <path>] [--account <name>]
 ```
+
+TUI 已并入 `herald`，不再单独产出 `herald-tui` 可执行文件。
 
 | 按键 | 作用 |
 |---|---|
@@ -251,7 +252,7 @@ HF_ENDPOINT=https://hf-mirror.example ./target/release/herald models download
 - macOS：`~/Library/Application Support/herald/`
 - Windows：`%APPDATA%\herald\`
 
-`herald-tui` 的 `h` 帮助页会显示实际生效的配置/数据库/模型/Tokenizer 路径及其存放模式；CLI 启动日志同样输出这些信息。
+`herald tui` 的 `h` 帮助页会显示实际生效的配置/数据库/模型/Tokenizer 路径及其存放模式；CLI 启动日志同样输出这些信息。
 
 ---
 

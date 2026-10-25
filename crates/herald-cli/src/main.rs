@@ -37,6 +37,12 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// 启动终端界面
+    Tui {
+        /// 启动时选中的账户
+        #[arg(long, short)]
+        account: Option<String>,
+    },
     /// 列出账户
     Accounts,
     /// 增量同步邮件
@@ -132,10 +138,24 @@ enum ModelsCommand {
     },
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     init_tracing();
-    match run().await {
+    let Cli {
+        config,
+        json,
+        command,
+    } = Cli::parse();
+    let result = match command {
+        Command::Tui { account } => herald_tui::run(config, account),
+        command => match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime.block_on(run(config, json, command)),
+            Err(err) => Err(err.into()),
+        },
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("错误：{err:#}");
@@ -157,16 +177,17 @@ fn init_tracing() {
         .try_init();
 }
 
-async fn run() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-    if let Command::Init { force } = &cli.command {
-        return init(cli.config.as_deref(), *force);
+async fn run(config: Option<PathBuf>, json: bool, command: Command) -> anyhow::Result<()> {
+    if let Command::Init { force } = &command {
+        return init(config.as_deref(), *force);
     }
 
-    let mut herald = Herald::open(cli.config.as_deref()).context("打开 Herald 失败")?;
-    match cli.command {
-        Command::Init { .. } => unreachable!(),
-        Command::Accounts => accounts(&herald, cli.json),
+    let mut herald = Herald::open(config.as_deref()).context("打开 Herald 失败")?;
+    match command {
+        Command::Init { .. } | Command::Tui { .. } => {
+            unreachable!("handled before opening the async entry point")
+        }
+        Command::Accounts => accounts(&herald, json),
         Command::Sync {
             account,
             all,
@@ -185,7 +206,7 @@ async fn run() -> anyhow::Result<()> {
                 with_embeddings: herald.semantic_enabled(),
             };
             let report = herald.sync(options).await?;
-            if cli.json {
+            if json {
                 print_json(&report)?;
             } else {
                 println!(
@@ -220,7 +241,7 @@ async fn run() -> anyhow::Result<()> {
             }
             .normalized();
             let (total, messages) = herald.list_messages(account.as_deref(), &filter)?;
-            if cli.json {
+            if json {
                 print_json(&serde_json::json!({ "total": total, "messages": messages }))?;
             } else {
                 print_messages(total, &messages);
@@ -240,7 +261,7 @@ async fn run() -> anyhow::Result<()> {
                 SearchKind::Keyword
             };
             let result = herald.search(account.as_deref(), &query, kind, limit, offset)?;
-            if cli.json {
+            if json {
                 print_json(&result)?;
             } else {
                 print_messages(result.total, &result.messages);
@@ -252,21 +273,11 @@ async fn run() -> anyhow::Result<()> {
             account,
             raw,
             full_body,
-        } => {
-            show(
-                &mut herald,
-                account.as_deref(),
-                &uidl,
-                raw,
-                full_body,
-                cli.json,
-            )
-            .await
-        }
+        } => show(&mut herald, account.as_deref(), &uidl, raw, full_body, json).await,
         Command::Status { account } => {
             let status = herald.status(account.as_deref())?;
             let errors = herald.sync_errors(account.as_deref(), 5)?;
-            if cli.json {
+            if json {
                 print_json(&serde_json::json!({
                     "status": status,
                     "recent_errors": errors,
@@ -297,7 +308,7 @@ async fn run() -> anyhow::Result<()> {
             let target = herald
                 .export_attachment(account.as_deref(), &uidl, index, &dest)
                 .await?;
-            if cli.json {
+            if json {
                 print_json(&serde_json::json!({ "path": target }))?;
             } else {
                 println!("已导出：{}", target.display());
@@ -321,7 +332,7 @@ async fn run() -> anyhow::Result<()> {
                     force,
                 })
                 .await?;
-            if cli.json {
+            if json {
                 print_json(&report)?;
             } else {
                 println!("模型：{}", report.model);
