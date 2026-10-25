@@ -122,7 +122,11 @@ impl SemanticService {
                     }
                 }
                 Err(err) => {
-                    self.warn_once(&format!("{err}（可运行 herald models download）"));
+                    let mut message = err.to_string();
+                    if !message.contains("herald models download") {
+                        message.push_str("（可运行 herald models download）");
+                    }
+                    self.warn_once(&message);
                     return stored;
                 }
             }
