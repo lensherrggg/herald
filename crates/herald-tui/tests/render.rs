@@ -394,7 +394,7 @@ fn renders_mailbox_detail_search_browser_and_raw_views() {
     assert!(plain.contains("Herald"), "{plain}");
     assert!(
         plain.contains("24-09-03"),
-        "the compact date sits on its own line:\n{plain}"
+        "the grouped date heading sits above the rows:\n{plain}"
     );
 
     let tiny = compact(&render(&app, 30, 6));
@@ -402,6 +402,14 @@ fn renders_mailbox_detail_search_browser_and_raw_views() {
 }
 
 fn synced_app(page_size: usize, messages: Vec<MockMessage>) -> (App, tempfile::TempDir) {
+    let (app, dir, _server) = synced_app_with_server(page_size, messages);
+    (app, dir)
+}
+
+fn synced_app_with_server(
+    page_size: usize,
+    messages: Vec<MockMessage>,
+) -> (App, tempfile::TempDir, MockPop3Server) {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -425,7 +433,11 @@ fn synced_app(page_size: usize, messages: Vec<MockMessage>) -> (App, tempfile::T
             ..Default::default()
         }))
         .expect("sync");
-    (App::new(herald, runtime, Some("work".to_string())), dir)
+    (
+        App::new(herald, runtime, Some("work".to_string())),
+        dir,
+        server,
+    )
 }
 
 #[test]
@@ -444,11 +456,7 @@ fn read_state_is_local_and_tracks_preview_open_and_toggle() {
     assert_eq!(app.unread_total, 1);
     assert!(app.status_text().contains("已读"));
     let marker = compact(&render(&app, 120, 40));
-    assert_eq!(
-        marker.matches('●').count(),
-        1,
-        "one unread marker:\n{marker}"
-    );
+    assert_eq!(marker.matches('▌').count(), 1, "one unread rail:\n{marker}");
 
     app.handle_key(key(KeyCode::Char('u')));
     assert!(!app.messages[0].is_read);
@@ -691,6 +699,22 @@ fn raw_view_wraps_long_cjk_lines_without_splitting_labels() {
 }
 
 #[test]
+fn raw_view_folds_attachments_into_names_and_sizes() {
+    let (mut app, _dir, _server) = synced_app_with_server(20, vec![message_one()]);
+    app.handle_key(key(KeyCode::Char('r')));
+    let raw = app.raw.as_ref().expect("raw view");
+
+    assert!(raw.contains("本周项目进度正常"), "{raw}");
+    assert!(raw.contains("[附件 1] notes.txt"), "{raw}");
+    assert!(raw.contains("[附件 2] 数据.bin"), "{raw}");
+    assert!(!raw.contains("aGVsbG8gYXR0YWNobWVudA0K"), "{raw}");
+    assert!(!raw.contains("AAECAwQ="), "{raw}");
+
+    let screen = compact(&render(&app, 100, 40));
+    assert!(screen.contains("2个附件已折叠"), "{screen}");
+}
+
+#[test]
 fn detail_preview_wraps_long_cjk_body_without_orphaning_labels() {
     let (mut app, _dir) = synced_app(20, vec![message_one()]);
     let body = format!("第 01 段：{}", "中文长文本测试。".repeat(20));
@@ -880,6 +904,7 @@ fn leaving_raw_search_clears_highlight_residue() {
         app.full_redraw,
         "leaving an overlay must force a full terminal repaint"
     );
+    terminal.clear().expect("clear like App::run does");
     terminal
         .draw(|frame| ui::draw(frame, &app))
         .expect("draw browse");
@@ -1059,15 +1084,111 @@ fn long_subjects_are_truncated_with_an_ellipsis() {
     let (app, _dir) = synced_app(20, vec![MockMessage::new("long", raw)]);
 
     let rows = render_rows(&app, 100, 30);
-    let date_row = rows
+    let mail_row = rows
         .iter()
-        .position(|row| compact(row).contains("24-09-03"))
-        .expect("list date row");
-    let subject_row = compact(&rows[date_row - 1]);
-    let sender_row = compact(&rows[date_row - 2]);
-    assert!(subject_row.contains('…'), "{subject_row}");
-    assert!(subject_row.contains("超长主题"), "{subject_row}");
-    assert!(sender_row.contains("张三"), "{sender_row}");
+        .map(|row| compact(row))
+        .find(|row| row.contains("张三"))
+        .expect("mail row");
+    assert!(mail_row.contains('…'), "{mail_row}");
+    assert!(mail_row.contains("超长主题"), "{mail_row}");
+    assert!(
+        rows.iter().any(|row| compact(row).contains("24-09-03")),
+        "the truncated row still has its date heading"
+    );
+}
+
+#[test]
+fn list_toggles_between_date_groups_and_compact_rows() {
+    let (mut app, _dir) = synced_app(20, vec![message_one(), message_two()]);
+    let grouped = compact(&render(&app, 100, 30));
+    assert!(grouped.contains("分组"), "grouped title:\n{grouped}");
+    assert!(
+        grouped.contains("──24-09-04"),
+        "date heading for the newer mail:\n{grouped}"
+    );
+    assert!(
+        grouped.contains("──24-09-03"),
+        "date heading for the older mail:\n{grouped}"
+    );
+
+    app.handle_key(key(KeyCode::Char('v')));
+    assert!(app.status_text().contains("紧凑"), "{}", app.status_text());
+    let compact_view = compact(&render(&app, 100, 30));
+    assert!(
+        compact_view.contains("紧凑"),
+        "compact title:\n{compact_view}"
+    );
+    assert!(
+        !compact_view.contains("──24"),
+        "compact rows have no date headings:\n{compact_view}"
+    );
+    assert!(
+        compact_view.contains("24-09-04") && compact_view.contains("24-09-03"),
+        "compact rows carry their own dates:\n{compact_view}"
+    );
+}
+
+#[test]
+fn selection_highlight_skips_date_headings() {
+    let (mut app, _dir) = synced_app(20, vec![message_one(), message_two()]);
+    app.color = true;
+    app.selected = 1;
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("test terminal");
+    terminal
+        .draw(|frame| ui::draw(frame, &app))
+        .expect("draw list");
+
+    let buffer = terminal.backend().buffer();
+    let text_at = |y: usize| -> String {
+        (0..50)
+            .map(|x| {
+                buffer
+                    .cell((x as u16, y as u16))
+                    .map_or(" ", |c| c.symbol())
+            })
+            .collect()
+    };
+    let cyan_at = |y: usize| {
+        (0..50).any(|x| {
+            buffer
+                .cell((x as u16, y as u16))
+                .is_some_and(|cell| cell.bg == Color::Cyan)
+        })
+    };
+
+    let mut headings = Vec::new();
+    let mut subject_row = None;
+    for y in 0..30 {
+        let text = text_at(y);
+        let flat = compact(&text);
+        if flat.contains("24-09-03") {
+            headings.push((y, text.clone()));
+        }
+        if flat.contains("项目进度汇报") {
+            subject_row = Some(y);
+        }
+    }
+    assert!(!headings.is_empty(), "grouped heading must be visible");
+    for (y, text) in headings {
+        assert!(!cyan_at(y), "heading must not look selected: {text}");
+    }
+    let subject_row = subject_row.expect("selected mail row");
+    assert!(
+        cyan_at(subject_row),
+        "the selected mail keeps the highlight: {}",
+        text_at(subject_row)
+    );
+}
+
+#[test]
+fn search_and_non_date_sorts_fall_back_to_compact_rows() {
+    let (mut app, _dir) = synced_app(20, vec![message_one(), message_two()]);
+    app.run_search_with(SearchKind::Keyword, SearchField::All, "会议".to_string());
+    assert!(!app.grouped_list());
+    let view = compact(&render(&app, 140, 30));
+    assert!(view.contains("紧凑"), "{view}");
+    assert!(!view.contains("──24"), "{view}");
+    assert!(view.contains("24-09-04"), "{view}");
 }
 
 #[test]

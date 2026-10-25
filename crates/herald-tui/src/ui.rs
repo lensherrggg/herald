@@ -10,7 +10,8 @@ use crate::app::{
     wrap_line, App, Focus, Mode, RawRow,
 };
 use crate::browser::Browser;
-use herald_core::model::{SearchField, SearchKind};
+use herald_core::model::{MessageSummary, SearchField, SearchKind};
+use herald_core::time;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
@@ -28,6 +29,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Constraint::Length(footer_height),
     ])
     .split(area);
+    // Overlays can shrink between frames; reset every cell so highlight
+    // backgrounds from the previous view never leak through empty space.
+    frame.render_widget(Clear, area);
     draw_header(frame, app, layout[0]);
     draw_main(frame, app, layout[1]);
     draw_footer(frame, app, layout[2]);
@@ -86,9 +90,14 @@ fn draw_main(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_list(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
     let sort_arrow = if app.descending { "↓" } else { "↑" };
+    let mode = if app.grouped_list() {
+        "分组"
+    } else {
+        "紧凑"
+    };
     let title = match &app.search {
         Some(search) => format!(
-            "{} {}搜索（{}）：{} · {} 条 ",
+            "{} {}搜索（{}）：{} · {} 条 · {mode} ",
             focus_marker(focused),
             search.label(),
             search.field.label(),
@@ -96,7 +105,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
             app.total
         ),
         None => format!(
-            "{} 邮件 · {}{} ",
+            "{} 邮件 · {}{} · {mode} ",
             focus_marker(focused),
             app.sort.label(),
             sort_arrow
@@ -119,35 +128,124 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
         return;
     }
     let inner_width = area.width.saturating_sub(2) as usize;
-    let items: Vec<ListItem> = app
-        .messages
-        .iter()
-        .map(|message| {
-            let marker = if message.is_read { "  " } else { "● " };
-            let sender = truncate_line(
-                &sender_short(message.from.as_deref()),
-                inner_width.saturating_sub(2),
-            );
-            let top = Line::from(vec![
-                Span::raw(marker),
-                Span::styled(sender, Style::new().add_modifier(Modifier::BOLD)),
-            ]);
-            let subject = message
-                .subject
-                .clone()
-                .filter(|subject| !subject.trim().is_empty())
-                .unwrap_or_else(|| "(无主题)".to_string());
-            let middle = Line::from(truncate_line(&subject, inner_width));
-            let bottom = Line::from(Span::styled(
-                shorten_date(message.date.as_deref()),
-                subtle(app),
-            ));
-            ListItem::new(vec![top, middle, bottom])
-        })
-        .collect();
-    let list = List::new(items).block(block).highlight_style(selected(app));
-    let mut state = ListState::default().with_selected(Some(app.selected));
+    let grouped = app.grouped_list();
+    let today = time::china_today();
+    let mut items = Vec::with_capacity(app.messages.len() + 8);
+    let mut selected_row = 0;
+    let mut last_group: Option<String> = None;
+    for (index, message) in app.messages.iter().enumerate() {
+        if grouped {
+            let key = time::china_group_key(message.date.as_deref());
+            if last_group.as_deref() != Some(key.as_str()) {
+                items.push(group_header(
+                    app,
+                    &time::list_group(message.date.as_deref(), today),
+                    inner_width,
+                ));
+                last_group = Some(key);
+            }
+        }
+        if index == app.selected {
+            selected_row = items.len();
+        }
+        items.push(mail_row(
+            app,
+            message,
+            inner_width,
+            grouped,
+            index == app.selected,
+        ));
+    }
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(selected(app))
+        .scroll_padding(1);
+    let mut state = ListState::default().with_selected(Some(selected_row));
     frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn mail_row(
+    app: &App,
+    message: &MessageSummary,
+    width: usize,
+    grouped: bool,
+    selected: bool,
+) -> ListItem<'static> {
+    let (sender_width, subject_width, meta_width) = list_columns(width, grouped);
+    let unread = !message.is_read;
+    let sender = truncate_line(&sender_short(message.from.as_deref()), sender_width);
+    let subject = message
+        .subject
+        .clone()
+        .filter(|subject| !subject.trim().is_empty())
+        .unwrap_or_else(|| "(无主题)".to_string());
+    let subject = truncate_line(&subject, subject_width);
+    let meta = if grouped {
+        time::china_clock(message.date.as_deref())
+    } else {
+        shorten_date(message.date.as_deref())
+    };
+    let meta = truncate_line(&meta, meta_width);
+
+    let sender_style = if selected {
+        Style::new()
+    } else if unread {
+        Style::new().add_modifier(Modifier::BOLD)
+    } else {
+        subtle(app)
+    };
+    let subject_style = if selected || unread {
+        Style::new()
+    } else {
+        subtle(app)
+    };
+    let meta_style = if selected { Style::new() } else { subtle(app) };
+    let rail_style = if selected {
+        Style::new()
+    } else if unread {
+        accent(app)
+    } else {
+        Style::new()
+    };
+    let sender_pad = sender_width.saturating_sub(UnicodeWidthStr::width(sender.as_str()));
+    let subject_pad = subject_width.saturating_sub(UnicodeWidthStr::width(subject.as_str()));
+    let meta_pad = meta_width.saturating_sub(UnicodeWidthStr::width(meta.as_str()));
+    ListItem::new(Line::from(vec![
+        Span::styled(if unread { "▌" } else { " " }, rail_style),
+        Span::styled(sender, sender_style),
+        Span::raw(" ".repeat(sender_pad)),
+        Span::raw(" "),
+        Span::styled(subject, subject_style),
+        Span::raw(" ".repeat(subject_pad)),
+        Span::raw(" "),
+        Span::styled(meta, meta_style),
+        Span::raw(" ".repeat(meta_pad)),
+    ]))
+}
+
+fn group_header(app: &App, label: &str, width: usize) -> ListItem<'static> {
+    let prefix = truncate_line(&format!("── {label} "), width);
+    let fill = width.saturating_sub(UnicodeWidthStr::width(prefix.as_str()));
+    let rule_style = if app.color {
+        Style::new().fg(Color::DarkGray)
+    } else {
+        Style::new().add_modifier(Modifier::DIM)
+    };
+    ListItem::new(Line::from(vec![
+        Span::styled(prefix, subtle(app)),
+        Span::styled("─".repeat(fill), rule_style),
+    ]))
+}
+
+fn list_columns(width: usize, grouped: bool) -> (usize, usize, usize) {
+    // Grouped rows only show HH:MM, compact rows need room for YY-MM-DD.
+    let meta_width = if grouped || width < 32 { 5 } else { 8 };
+    let available = width.saturating_sub(meta_width + 3);
+    let sender_width = (width / 5)
+        .clamp(6, 16)
+        .min(available.saturating_sub(4).max(1));
+    let subject_width = available.saturating_sub(sender_width).max(1);
+    (sender_width, subject_width, meta_width)
 }
 
 /// Cut to a display-column budget, appending an ellipsis so a truncated
@@ -275,7 +373,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
                 if area.width < 70 {
                     "s 同步 · / 搜索 · o 排序 · u 已读 · Enter 详情"
                 } else {
-                    "s 同步 · / 搜索 · o 排序 · O 升降 · u 已读 · Enter 详情 · r 原文 · e 导出 · h 帮助"
+                    "s 同步 · / 搜索 · o 排序 · O 升降 · u 已读 · v 列表 · Enter 详情 · r 原文 · e 导出 · h 帮助"
                 }
             }
             Mode::Input(_) => "Enter 确认 · Tab 模式 · Ctrl+F 字段 · Esc 取消",
@@ -755,6 +853,7 @@ fn draw_help(frame: &mut Frame, app: &App) {
         Line::from("/            搜索（Tab 模式 · Ctrl+F 字段）"),
         Line::from("a            切换账户"),
         Line::from("o / O        切换排序字段 / 反转升降序"),
+        Line::from("v            切换列表：日期分组 / 紧凑单行"),
         Line::from("[ ] PgUp/PgDn 翻页"),
         Line::from("↑ ↓ j k      移动选择（详情聚焦时滚动正文）"),
         Line::from("Enter        加载邮件详情（并标记已读）"),

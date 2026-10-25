@@ -72,6 +72,62 @@ pub fn list_date(value: Option<&str>, today: NaiveDate) -> String {
     }
 }
 
+/// Current date in China Standard Time.
+pub fn china_today() -> NaiveDate {
+    Utc::now().with_timezone(&offset()).date_naive()
+}
+
+/// Parse a stored timestamp into its China-local calendar date.
+pub fn china_date(value: Option<&str>) -> Option<NaiveDate> {
+    raw(value).and_then(parse_date)
+}
+
+/// `HH:MM` in China Standard Time; `-` when the value is missing or invalid.
+pub fn china_clock(value: Option<&str>) -> String {
+    let Some(value) = raw(value) else {
+        return "-".to_string();
+    };
+    match parse(value) {
+        Some(time) => time.format("%H:%M").to_string(),
+        None => "-".to_string(),
+    }
+}
+
+/// Stable key for grouping consecutive messages by China-local day. Invalid
+/// timestamps stay distinct so unrelated malformed dates do not get merged.
+pub fn china_group_key(value: Option<&str>) -> String {
+    match raw(value).and_then(parse_date) {
+        Some(date) => date.format("%Y-%m-%d").to_string(),
+        None => raw(value).unwrap_or("未知日期").to_string(),
+    }
+}
+
+/// Heading for a date group in the mail list, e.g. `今天 10-25`,
+/// `昨天 10-24`, `周三 10-21`, `09-12` or `24-09-12`. Older years use the
+/// same two-digit form as the compact row meta so switching modes keeps
+/// the date column consistent.
+pub fn list_group(value: Option<&str>, today: NaiveDate) -> String {
+    let Some(value) = raw(value) else {
+        return "未知日期".to_string();
+    };
+    let Some(date) = parse_date(value) else {
+        return value.to_string();
+    };
+    let monday = today - Duration::days(today.weekday().num_days_from_monday() as i64);
+    let sunday = monday + Duration::days(6);
+    if date == today {
+        format!("今天 {}", date.format("%m-%d"))
+    } else if date == today - Duration::days(1) {
+        format!("昨天 {}", date.format("%m-%d"))
+    } else if date >= monday && date <= sunday {
+        format!("{} {}", weekday_label(date.weekday()), date.format("%m-%d"))
+    } else if date.year() == today.year() {
+        date.format("%m-%d").to_string()
+    } else {
+        date.format("%y-%m-%d").to_string()
+    }
+}
+
 /// `YYYY-MM-DD HH:MM:SS`, used by detail views and CLI output.
 pub fn china_datetime(value: Option<&str>) -> String {
     let Some(value) = raw(value) else {
@@ -139,5 +195,42 @@ mod tests {
     fn keeps_unknown_formats_readable() {
         assert_eq!(china_datetime(Some("  ")), "-");
         assert_eq!(china_datetime(Some("not a date")), "not a date");
+    }
+
+    #[test]
+    fn clock_and_group_labels_use_china_time() {
+        assert_eq!(china_clock(Some("2026-10-25T01:05:00Z")), "09:05");
+        assert_eq!(china_clock(Some("2026-10-25T09:05:00+08:00")), "09:05");
+        assert_eq!(china_clock(None), "-");
+        assert_eq!(china_clock(Some("not a date")), "-");
+
+        let today = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
+        let group = |value| list_group(Some(value), today);
+        assert_eq!(group("2026-10-25T01:00:00Z"), "今天 10-25");
+        assert_eq!(group("2026-10-24T10:00:00+08:00"), "昨天 10-24");
+        assert_eq!(group("2026-10-21T10:00:00+08:00"), "周三 10-21");
+        assert_eq!(group("2026-10-18T10:00:00+08:00"), "10-18");
+        assert_eq!(group("2025-12-31T10:00:00+08:00"), "25-12-31");
+        assert_eq!(group("not a date"), "not a date");
+        assert_eq!(list_group(None, today), "未知日期");
+    }
+
+    #[test]
+    fn group_keys_normalize_offsets_and_keep_invalid_values_distinct() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
+        assert_eq!(
+            china_group_key(Some("2026-10-24T23:30:00Z")),
+            "2026-10-25",
+            "UTC late evening is the next day in China"
+        );
+        assert_eq!(
+            china_group_key(Some("2026-10-25T09:05:00+08:00")),
+            "2026-10-25"
+        );
+        assert_eq!(china_group_key(Some("bad one")), "bad one");
+        assert_eq!(china_group_key(Some("bad two")), "bad two");
+        assert_eq!(china_group_key(None), "未知日期");
+        assert_eq!(china_date(Some("2026-10-25T09:05:00+08:00")), Some(today));
+        assert_eq!(china_date(Some("bad")), None);
     }
 }

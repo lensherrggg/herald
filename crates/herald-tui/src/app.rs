@@ -6,6 +6,7 @@ use herald_core::model::{
     AccountSummary, AttachmentMeta, MessageDetail, MessageFilter, MessageSort, MessageSummary,
     SearchField, SearchKind, SearchOptions, SearchResult, SyncOptions, SyncStatus,
 };
+use herald_core::parse::{raw_attachments, RawAttachment};
 use herald_core::paths::ResolvedPaths;
 use herald_core::{Config, Herald};
 use ratatui::DefaultTerminal;
@@ -162,6 +163,26 @@ impl Mode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ListMode {
+    #[default]
+    Grouped,
+    Compact,
+}
+
+impl ListMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Grouped => "分组",
+            Self::Compact => "紧凑",
+        }
+    }
+}
+
+fn grouped_list_for(mode: ListMode, searching: bool, sort: MessageSort) -> bool {
+    mode == ListMode::Grouped && !searching && sort == MessageSort::Date
+}
+
 pub struct App {
     pub herald: Herald,
     pub runtime: Runtime,
@@ -176,6 +197,7 @@ pub struct App {
     pub selected: usize,
     pub sort: MessageSort,
     pub descending: bool,
+    pub list_mode: ListMode,
     pub search: Option<SearchState>,
     pub search_note: Option<String>,
     pub detail: Option<MessageDetail>,
@@ -222,6 +244,7 @@ impl App {
             selected: 0,
             sort: MessageSort::Date,
             descending: true,
+            list_mode: ListMode::Grouped,
             search: None,
             search_note: None,
             detail: None,
@@ -462,17 +485,20 @@ impl App {
             .block_on(self.herald.raw_message(account.as_deref(), &uidl))
         {
             Ok(bytes) => {
-                let (text, truncated) = prepare_raw(&bytes, RAW_VIEW_LIMIT);
+                let attachments = raw_attachments(&bytes);
+                let folded = attachments.len();
+                let visible = if folded > 0 {
+                    fold_attachments(&bytes, &attachments)
+                } else {
+                    bytes
+                };
+                let (text, truncated) = prepare_raw(&visible, RAW_VIEW_LIMIT);
                 self.raw = Some(text);
                 self.raw_scroll = 0;
                 self.raw_truncated = truncated;
                 self.raw_search = None;
                 self.mode = Mode::Raw;
-                self.status = StatusMessage::info(if truncated {
-                    "原始邮件：超过 256KB，已截断 · Esc 返回"
-                } else {
-                    "原始邮件：↑/↓ 滚动，Esc 返回"
-                });
+                self.status = StatusMessage::info(raw_status(folded, truncated));
             }
             Err(err) => {
                 self.status = StatusMessage::error(format!("获取原始邮件失败：{err}"));
@@ -566,6 +592,24 @@ impl App {
             self.sort.label(),
             if self.descending { "↓" } else { "↑" }
         ));
+    }
+
+    pub fn grouped_list(&self) -> bool {
+        grouped_list_for(self.list_mode, self.search.is_some(), self.sort)
+    }
+
+    pub fn toggle_list_mode(&mut self) {
+        self.list_mode = match self.list_mode {
+            ListMode::Grouped => ListMode::Compact,
+            ListMode::Compact => ListMode::Grouped,
+        };
+        let auto_compact = self.list_mode == ListMode::Grouped && !self.grouped_list();
+        let suffix = if auto_compact {
+            "（搜索或非日期排序时自动用紧凑模式）"
+        } else {
+            ""
+        };
+        self.status = StatusMessage::info(format!("列表：{}{suffix}", self.list_mode.label()));
     }
 
     pub fn run_search(&mut self, kind: SearchKind, query: String) {
@@ -816,6 +860,7 @@ impl App {
             }
             KeyCode::Char('o') => self.cycle_sort(),
             KeyCode::Char('O') => self.reverse_sort(),
+            KeyCode::Char('v') => self.toggle_list_mode(),
             KeyCode::Char(']') => self.next_page(),
             KeyCode::Char('[') => self.previous_page(),
             KeyCode::PageDown => self.next_page(),
@@ -1688,6 +1733,70 @@ pub fn raw_match_row(text: &str, matched: &RawMatch, width: u16) -> u16 {
         .min(u16::MAX as usize) as u16
 }
 
+fn fold_attachments(raw: &[u8], attachments: &[RawAttachment]) -> Vec<u8> {
+    let mut spans: Vec<(usize, &RawAttachment)> = attachments
+        .iter()
+        .enumerate()
+        .filter(|(_, attachment)| {
+            attachment.body_start < attachment.end && attachment.end <= raw.len()
+        })
+        .collect();
+    spans.sort_by_key(|(_, attachment)| attachment.body_start);
+
+    let mut output = Vec::with_capacity(raw.len());
+    let mut cursor = 0;
+    for (ordinal, attachment) in spans {
+        if attachment.body_start < cursor {
+            continue;
+        }
+        output.extend_from_slice(&raw[cursor..attachment.body_start]);
+        output.extend_from_slice(attachment_placeholder(ordinal, attachment).as_bytes());
+        cursor = attachment.end;
+    }
+    output.extend_from_slice(&raw[cursor..]);
+    output
+}
+
+fn attachment_placeholder(ordinal: usize, attachment: &RawAttachment) -> String {
+    let label = if attachment.is_inline {
+        "内嵌资源"
+    } else {
+        "附件"
+    };
+    let raw_name = attachment.filename.as_deref().unwrap_or("未命名");
+    let name: String = raw_name
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    let name = if name.trim().is_empty() {
+        "未命名".to_string()
+    } else {
+        name
+    };
+    let kind = attachment.mime_type.as_deref().unwrap_or("未知类型");
+    let size = format_size(attachment.size);
+    let action = if attachment.is_inline {
+        ""
+    } else {
+        "，按 e 导出"
+    };
+    format!(
+        "[{label} {}] {name} · {kind} · {size}{action}\n",
+        ordinal + 1
+    )
+}
+
+fn raw_status(folded: usize, truncated: bool) -> String {
+    match (folded, truncated) {
+        (0, false) => "原始邮件：↑/↓ 滚动，Esc 返回".to_string(),
+        (0, true) => "原始邮件：超过 256KB，已截断 · Esc 返回".to_string(),
+        (count, false) => format!("原始邮件：{count} 个附件已折叠 · ↑/↓ 滚动，Esc 返回"),
+        (count, true) => {
+            format!("原始邮件：{count} 个附件已折叠，仍超过 256KB 已截断 · Esc 返回")
+        }
+    }
+}
+
 fn prepare_raw(bytes: &[u8], limit: usize) -> (String, bool) {
     let truncated = bytes.len() > limit;
     let bytes = if truncated { &bytes[..limit] } else { bytes };
@@ -1959,5 +2068,63 @@ mod tests {
         let hint = sync_limit_hint(false, 50, 50);
         assert!(hint.contains("50"), "{hint}");
         assert!(hint.contains('S'), "{hint}");
+    }
+
+    #[test]
+    fn grouped_list_falls_back_to_compact_for_search_and_other_sorts() {
+        assert!(grouped_list_for(
+            ListMode::Grouped,
+            false,
+            MessageSort::Date
+        ));
+        assert!(!grouped_list_for(
+            ListMode::Grouped,
+            true,
+            MessageSort::Date
+        ));
+        assert!(!grouped_list_for(
+            ListMode::Grouped,
+            false,
+            MessageSort::From
+        ));
+        assert!(!grouped_list_for(
+            ListMode::Compact,
+            false,
+            MessageSort::Date
+        ));
+    }
+
+    fn multipart_with_attachment(body: &str) -> Vec<u8> {
+        format!(
+            "From: a@example.com\r\nSubject: report\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nhello\r\n--b\r\nContent-Type: application/pdf; name=\"report.pdf\"\r\nContent-Disposition: attachment; filename=\"report.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\n{body}\r\n--b--\r\n"
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn raw_view_folds_attachment_bodies_into_a_list() {
+        let raw = multipart_with_attachment(&"A".repeat(4000));
+        let attachments = raw_attachments(&raw);
+        assert_eq!(attachments.len(), 1);
+        let folded = String::from_utf8(fold_attachments(&raw, &attachments)).unwrap();
+        assert!(folded.contains("hello"), "{folded}");
+        assert!(folded.contains("[附件 1] report.pdf"), "{folded}");
+        assert!(folded.contains("application/pdf"), "{folded}");
+        assert!(!folded.contains(&"A".repeat(100)), "attachment body leaked");
+        assert!(folded.contains("--b--"), "{folded}");
+        assert!(folded.len() < raw.len());
+    }
+
+    #[test]
+    fn folded_attachment_keeps_the_raw_view_under_the_limit() {
+        let raw = multipart_with_attachment(&"A".repeat(400_000));
+        let attachments = raw_attachments(&raw);
+        let folded = fold_attachments(&raw, &attachments);
+        let (text, truncated) = prepare_raw(&folded, RAW_VIEW_LIMIT);
+        assert!(!truncated);
+        assert!(text.contains("[附件 1] report.pdf"), "{text}");
+        assert!(!text.contains(&"A".repeat(100)));
+        assert!(raw_status(1, false).contains("1 个附件"));
+        assert!(raw_status(1, true).contains("截断"));
     }
 }

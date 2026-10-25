@@ -202,6 +202,47 @@ fn format_addr(addr: &Addr<'_>) -> String {
     }
 }
 
+/// One MIME attachment plus the raw byte range of its encoded body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawAttachment {
+    pub body_start: usize,
+    pub end: usize,
+    pub filename: Option<String>,
+    pub mime_type: Option<String>,
+    pub size: u64,
+    pub is_inline: bool,
+}
+
+/// Locate attachment bodies so the raw viewer can replace base64/QP blobs
+/// with a short list entry while keeping the rest of the message untouched.
+pub fn raw_attachments(raw: &[u8]) -> Vec<RawAttachment> {
+    let Some(message) = parser().parse(raw) else {
+        return Vec::new();
+    };
+    message
+        .attachments()
+        .filter_map(|part| {
+            let body_start = part.offset_body as usize;
+            let end = (part.offset_end as usize).min(raw.len());
+            (body_start <= end).then(|| RawAttachment {
+                body_start,
+                end,
+                filename: part.attachment_name().map(str::to_string),
+                mime_type: part
+                    .content_type()
+                    .map(|content_type| match content_type.subtype() {
+                        Some(subtype) => format!("{}/{}", content_type.ctype(), subtype),
+                        None => content_type.ctype().to_string(),
+                    }),
+                size: part.len() as u64,
+                is_inline: part
+                    .content_disposition()
+                    .is_some_and(|disposition| disposition.is_inline()),
+            })
+        })
+        .collect()
+}
+
 /// A cruder "display name" used for embeddings (subject + sender display name).
 pub fn sender_display_name(from: Option<&str>) -> Option<&str> {
     let from = from?;
@@ -309,5 +350,41 @@ mod tests {
         let parsed = parse_message(&raw, "h", 10, false).unwrap();
         assert_eq!(parsed.header.subject.as_deref(), Some("only header"));
         assert!(parsed.body_text.is_none());
+    }
+
+    #[test]
+    fn raw_attachment_spans_cover_encoded_bodies() {
+        let raw = sample(
+            "From: a@example.com\nSubject: report\nMIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\"b\"\n\n--b\nContent-Type: text/plain\n\nhello\n--b\nContent-Type: application/pdf; name=\"report.pdf\"\nContent-Disposition: attachment; filename=\"report.pdf\"\nContent-Transfer-Encoding: base64\n\nJVBERi0xLjQK\n--b--\n",
+        );
+        let attachments = raw_attachments(&raw);
+        assert_eq!(attachments.len(), 1);
+        let attachment = &attachments[0];
+        assert_eq!(attachment.filename.as_deref(), Some("report.pdf"));
+        assert_eq!(attachment.mime_type.as_deref(), Some("application/pdf"));
+        assert!(!attachment.is_inline);
+        let body = &raw[attachment.body_start..attachment.end];
+        assert!(
+            String::from_utf8_lossy(body).contains("JVBERi0"),
+            "{body:?}"
+        );
+        assert!(!String::from_utf8_lossy(body).contains("Content-Disposition"));
+    }
+
+    #[test]
+    fn raw_attachment_spans_keep_top_level_headers_outside_the_body() {
+        let raw = sample(
+            "From: a@example.com\nSubject: scan\nContent-Type: application/pdf; name=\"scan.pdf\"\nContent-Disposition: attachment; filename=\"scan.pdf\"\nContent-Transfer-Encoding: base64\n\nJVBERi0xLjQK\n",
+        );
+        let attachments = raw_attachments(&raw);
+        assert!(!attachments.is_empty());
+        let attachment = &attachments[0];
+        assert!(attachment.body_start > 0);
+        let head = String::from_utf8_lossy(&raw[..attachment.body_start]);
+        assert!(head.contains("Subject: scan"), "{head}");
+        assert!(
+            String::from_utf8_lossy(&raw[attachment.body_start..attachment.end])
+                .contains("JVBERi0")
+        );
     }
 }
