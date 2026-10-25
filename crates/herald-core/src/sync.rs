@@ -22,8 +22,8 @@ pub async fn run(
     store: &mut Store,
     account: &AccountConfig,
     options: &SyncOptions,
+    password: String,
 ) -> Result<SyncOutcome> {
-    let password = account.resolve_password()?;
     let pop3_options = Pop3Options::from_account(account, password);
     run_with_options(config, store, account, options, pop3_options).await
 }

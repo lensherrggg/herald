@@ -104,8 +104,13 @@ host = "mail.intra.example.com"
 port = 995
 security = "tls"                 # plain | stls | tls
 username = "alice"
-# password 与 password_env 必须且只能配一个
-password_env = "HERALD_WORK_PASSWORD"
+# 凭据来源三选一（互斥）：cred-cmd / password_env / password
+# cred-cmd 的 stdout 第一行就是密码；不要使用交互式命令
+cred-cmd = "secret-tool lookup service herald username alice"
+# password_env = "HERALD_WORK_PASSWORD"
+# password = "plaintext"         # 已弃用，仅用于本地试用
+# cred_cmd_timeout_secs = 30     # 默认 30 秒
+# cred_cmd_cache = true          # 默认进程内缓存，退出即清除
 # timeout_secs = 30
 
 [sync]
@@ -126,7 +131,28 @@ model_name = "bge-small-zh-v1.5"
 page_size = 20                   # TUI 每页邮件数（也用于搜索结果分页）
 ```
 
-> `password_env` 指向的环境变量不存在或为空时会直接报错，**不会回退到明文密码**。
+> `password_env` 指向的环境变量不存在或为空时会直接报错，**不会回退到明文密码**；`cred-cmd` 执行失败同样不会回退。
+
+#### 凭据来源（`cred-cmd`）
+
+Herald 不内置密钥环，也不保存密码：它执行用户配置的外部命令，把 **stdout 第一行** 当作密码。Unix 走 `sh -c`，Windows 走 `powershell -NoProfile -Command`。
+
+| 平台 | 方案 | `cred-cmd` 示例 |
+|---|---|---|
+| Windows | PowerShell SecretManagement | `powershell -NoProfile -Command "(Get-Secret -Name 'herald-work' -AsPlainText)"` |
+| macOS | 系统 Keychain | `security find-generic-password -s 'herald-work' -w` |
+| Linux（桌面） | Secret Service | `secret-tool lookup service herald username alice` |
+| Linux / macOS | pass | `pass show herald/work/alice` |
+| 任意 | 自定义脚本 | `sh /opt/herald/get-pass.sh work` |
+
+规则与取舍：
+
+- 只读第一行，去掉行尾 `\n` / `\r`，**不 trim 空格**；空输出、非零退出码、超时都视为失败。
+- 默认超时 30 秒（`cred_cmd_timeout_secs`），超时会终止子进程。
+- 默认在当前进程内缓存密码（`cred_cmd_cache = false` 可关）；缓存只在内存，进程退出即消失，不写磁盘。
+- `cred-cmd` 不应触发交互（GPG pinentry 等）：Herald 没有 TTY 透传，交互式命令会等到超时失败。请使用已解锁的 gpg-agent、系统密钥环或 GUI pinentry。
+- 不要把密码作为命令行参数传入（进程列表可见），应由命令内部从安全存储读取。
+- 排查入口：`herald auth status` 看来源，`herald auth test` 实际执行一次凭据获取并登录。
 
 ### 4.2 准备语义模型（可选）
 
@@ -181,8 +207,14 @@ HF_ENDPOINT=https://hf-mirror.example ./target/release/herald models download
 ./target/release/herald mark <uidl> --unread                   # 标记未读（仅本地）
 ./target/release/herald status
 
+./target/release/herald auth status             # 各账户凭据来源；不显示密码/命令全文
+./target/release/herald auth test               # 执行凭据获取并登录一次
+./target/release/herald auth test --account work
+
 ./target/release/herald export-attachment <uidl> 0 ./exports
 ```
+
+> 账户仍使用明文 `password` 时，每条 CLI 命令的**首行 stderr** 会给出迁移建议（`--json` 的 stdout 不受影响）；TUI 则在每次启动时显示一次「按任意键关闭」的建议浮窗。
 
 `sync` 默认只处理最近 `sync.default_limit` 封**新**邮件（便携配置是 50），取不完时 TUI 会提示按 `S`；`--all` 和 `S` 会处理服务器上全部未知 UIDL。因此连续两次普通同步可能各拉 50 封，合计 100 封，这不是重复入库。
 
@@ -343,7 +375,7 @@ $env:HERALD_LOG = "debug"
 
 ## 6. 配置校验要点
 
-- `password` 与 `password_env` 必须且只能配置一个。
+- `cred-cmd`、`password_env`、`password` 必须且只能配置一个；`cred-cmd` 不能为空串，`cred_cmd_timeout_secs` 必须大于 0；`password` 已弃用。
 - `name` 唯一，`host` / `username` 非空，`port` 必填。
 - 多个账户且没有 `default_account` 时，必须显式传 `account`。
 - `sync.default_limit > 0`；`auto_body_max_size = 0` 表示不限。
@@ -356,6 +388,9 @@ $env:HERALD_LOG = "debug"
 ## 7. 安全边界
 
 - 密码只参与认证，不写日志；仓库不包含任何真实账户配置。
+- `auth status` / `auth test` 只显示来源与结果，不显示密码或命令全文；凭据错误信息不包含 stdout/stderr 全文。
+- `cred-cmd` 的密码只来自命令的安全存储，不应作为命令行参数出现；会话内缓存仅在内存，进程退出即清除。
+- 使用明文 `password` 时启动日志告警，TUI 与 CLI 还会给出可见的迁移建议。
 - 仅使用 POP3 只读命令（CAPA/UIDL/TOP/RETR/QUIT）。
 - SQLite 全部参数化查询；FTS 查询逐词加引号，避免注入 FTS 运算符。
 - MCP 不暴露附件、文件系统路径、模型路径，也不能触发附件下载或模型下载。

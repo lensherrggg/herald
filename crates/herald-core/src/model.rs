@@ -110,6 +110,16 @@ pub struct AccountSummary {
     pub total_messages: i64,
 }
 
+/// Result of `herald auth test`: proves a credential source and POP3 login
+/// work, without carrying the password anywhere near the output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthTestReport {
+    pub account: String,
+    pub source: String,
+    pub host: String,
+    pub port: u16,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncStatus {
     pub account: String,

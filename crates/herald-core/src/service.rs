@@ -3,15 +3,16 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::config::{AccountConfig, Config};
+use crate::credentials::CredentialResolver;
 use crate::error::{HeraldError, Result};
 use crate::model::{
-    default_export_base, AccountSummary, AttachmentData, MessageDetail, MessageFilter,
-    MessageSummary, SearchField, SearchKind, SearchOptions, SearchResult, SyncErrorRecord,
-    SyncOptions, SyncReport, SyncStatus,
+    default_export_base, AccountSummary, AttachmentData, AuthTestReport, MessageDetail,
+    MessageFilter, MessageSummary, SearchField, SearchKind, SearchOptions, SearchResult,
+    SyncErrorRecord, SyncOptions, SyncReport, SyncStatus,
 };
 use crate::parse::parse_message;
 use crate::paths::{PathLayout, ResolvedPaths};
-use crate::pop3::{self, Pop3Options};
+use crate::pop3::{self, Pop3Client, Pop3Options};
 use crate::search::index_text;
 use crate::store::Store;
 use crate::sync::{self, EmbeddingJob};
@@ -25,6 +26,7 @@ pub struct Herald {
     pub config: Config,
     pub paths: ResolvedPaths,
     pub store: Store,
+    credentials: CredentialResolver,
     #[cfg(feature = "semantic")]
     semantic: SemanticService,
     demo: Option<crate::demo::DemoSession>,
@@ -76,6 +78,7 @@ impl Herald {
             config,
             paths,
             store,
+            credentials: CredentialResolver::new(),
             #[cfg(feature = "semantic")]
             semantic,
             demo,
@@ -113,6 +116,14 @@ impl Herald {
                 "关闭"
             }
         );
+        for account in &self.config.accounts {
+            if account.password.is_some() && self.demo.is_none() {
+                tracing::warn!(
+                    account = %account.name,
+                    "账户使用明文 password，建议改用 cred-cmd 从系统凭据存储读取"
+                );
+            }
+        }
     }
 
     pub fn semantic_enabled(&self) -> bool {
@@ -156,18 +167,20 @@ impl Herald {
             .config
             .resolve_account(options.account.as_deref())?
             .clone();
-        let outcome = match sync::run(&self.config, &mut self.store, &account, &options).await {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                tracing::error!(
-                    account = %account.name,
-                    host = %account.host,
-                    %error,
-                    "同步失败"
-                );
-                return Err(error);
-            }
-        };
+        let password = self.credentials.resolve(&account)?;
+        let outcome =
+            match sync::run(&self.config, &mut self.store, &account, &options, password).await {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    tracing::error!(
+                        account = %account.name,
+                        host = %account.host,
+                        %error,
+                        "同步失败"
+                    );
+                    return Err(error);
+                }
+            };
         if options.with_embeddings {
             let jobs = if options.index {
                 let account_id = self.store.account_id(&account.name)?;
@@ -354,7 +367,8 @@ impl Herald {
         if !fetch_body || detail.body_cached {
             return Ok(detail);
         }
-        let options = Pop3Options::from_account(&account, account.resolve_password()?);
+        let password = self.credentials.resolve(&account)?;
+        let options = Pop3Options::from_account(&account, password);
         let raw = pop3::fetch_raw_uidl(&options, uidl).await?;
         let parsed = parse_message(&raw, uidl, detail.header.size, false)?;
         let message_id = self.store.upsert_header(account_id, &parsed.header)?;
@@ -411,7 +425,8 @@ impl Herald {
             Err(err) => return Err(err),
         }
 
-        let options = Pop3Options::from_account(&account, account.resolve_password()?);
+        let password = self.credentials.resolve(&account)?;
+        let options = Pop3Options::from_account(&account, password);
         let raw = pop3::fetch_raw_uidl(&options, uidl).await?;
         let parsed = parse_message(&raw, uidl, 0, true)?;
         let message_id = self.store.upsert_header(account_id, &parsed.header)?;
@@ -503,8 +518,25 @@ impl Herald {
     /// Used by callers that must release the borrow on `Herald` before awaiting.
     pub fn pop3_options(&self, account: Option<&str>) -> Result<Pop3Options> {
         let account = self.account(account)?;
-        let password = account.resolve_password()?;
+        let password = self.credentials.resolve(&account)?;
         Ok(Pop3Options::from_account(&account, password))
+    }
+
+    /// `auth test`: resolve the configured credential source, then perform one
+    /// real POP3 login. The password is consumed by the client only.
+    pub async fn test_account(&self, account: Option<&str>) -> Result<AuthTestReport> {
+        let account = self.account(account)?;
+        let source = account.credential_source()?;
+        let password = self.credentials.resolve(&account)?;
+        let options = Pop3Options::from_account(&account, password);
+        let client = Pop3Client::connect(&options).await?;
+        client.quit().await?;
+        Ok(AuthTestReport {
+            account: account.name,
+            source: source.kind().to_string(),
+            host: account.host,
+            port: account.port,
+        })
     }
 
     pub async fn raw_message(&self, account: Option<&str>, uidl: &str) -> Result<Vec<u8>> {

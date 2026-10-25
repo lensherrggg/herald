@@ -178,6 +178,7 @@ fn renders_mailbox_detail_search_browser_and_raw_views() {
     assert_eq!(report.errors.len(), 0);
 
     let mut app = App::new(herald, runtime, Some("work".to_string()));
+    app.dismiss_cred_notice();
     app.color = true;
     assert_eq!(app.page_size, 20);
     assert_eq!(app.total, 2);
@@ -433,11 +434,9 @@ fn synced_app_with_server(
             ..Default::default()
         }))
         .expect("sync");
-    (
-        App::new(herald, runtime, Some("work".to_string())),
-        dir,
-        server,
-    )
+    let mut app = App::new(herald, runtime, Some("work".to_string()));
+    app.dismiss_cred_notice();
+    (app, dir, server)
 }
 
 #[test]
@@ -508,6 +507,7 @@ fn demo_config_opens_without_accounts() {
         .build()
         .expect("runtime");
     let app = App::new(herald, runtime, None);
+    assert!(!app.cred_notice, "the built-in demo account must not warn");
     assert_eq!(app.account.as_deref(), Some("demo"));
     assert_eq!(app.total, 25);
     assert_eq!(app.unread_total, 25);
@@ -516,6 +516,34 @@ fn demo_config_opens_without_accounts() {
     let screen = compact(&render(&app, 120, 40));
     assert!(screen.contains("共25封"), "{screen}");
     assert!(screen.contains("未读25"), "{screen}");
+}
+
+#[test]
+fn plaintext_password_shows_notice_until_any_key() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let exports = dir.path().join("exports");
+    std::fs::create_dir_all(&exports).unwrap();
+    let config = write_config(dir.path(), 1, &exports, 20);
+    let herald = Herald::open(Some(&config)).expect("open herald");
+    let mut app = App::new(herald, runtime, Some("work".to_string()));
+    assert!(app.cred_notice, "plaintext config must trigger the notice");
+
+    let screen = compact(&render(&app, 120, 40));
+    assert!(screen.contains("安全建议"), "{screen}");
+    assert!(screen.contains("cred-cmd"), "{screen}");
+    assert!(screen.contains("按任意键关闭"), "{screen}");
+
+    app.handle_key(key(KeyCode::Char('q')));
+    assert!(!app.cred_notice, "any key must dismiss the notice");
+    assert!(
+        !app.quit,
+        "the dismissing key must not run its normal action"
+    );
+    assert!(matches!(app.mode, herald_tui::app::Mode::Browse));
 }
 
 #[test]
@@ -583,6 +611,7 @@ fn raw_view_searches_keywords_and_keeps_the_input_at_the_bottom() {
         }))
         .expect("sync");
     let mut app = App::new(herald, runtime, Some("work".to_string()));
+    app.dismiss_cred_notice();
     assert_eq!(app.messages[0].uidl, "m2");
     app.load_raw();
     assert!(

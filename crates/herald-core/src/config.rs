@@ -7,6 +7,7 @@ use crate::error::{HeraldError, Result};
 
 pub const DEFAULT_MODEL_NAME: &str = "bge-small-zh-v1.5";
 pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
+pub const DEFAULT_CRED_CMD_TIMEOUT_SECS: u64 = 30;
 pub const DEFAULT_ATTACHMENT_LIMIT: u64 = 50 * 1024 * 1024;
 pub const DEFAULT_PAGE_SIZE: usize = 20;
 
@@ -32,6 +33,10 @@ fn default_timeout() -> Option<u64> {
     Some(DEFAULT_TIMEOUT_SECS)
 }
 
+fn default_cred_cmd_timeout() -> Option<u64> {
+    Some(DEFAULT_CRED_CMD_TIMEOUT_SECS)
+}
+
 fn default_limit() -> usize {
     50
 }
@@ -52,6 +57,25 @@ fn default_page_size() -> usize {
     DEFAULT_PAGE_SIZE
 }
 
+/// Where an account's password comes from. Exactly one variant may be
+/// configured; there is deliberately no priority order between them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialSource {
+    Password(String),
+    PasswordEnv(String),
+    CredCmd(String),
+}
+
+impl CredentialSource {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            CredentialSource::Password(_) => "password",
+            CredentialSource::PasswordEnv(_) => "password_env",
+            CredentialSource::CredCmd(_) => "cred-cmd",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountConfig {
     pub name: String,
@@ -59,10 +83,23 @@ pub struct AccountConfig {
     pub port: u16,
     pub security: Security,
     pub username: String,
+    /// Plaintext password. Deprecated: prefer `cred-cmd` or `password_env`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_env: Option<String>,
+    /// External command whose stdout's first line is the password.
+    #[serde(rename = "cred-cmd", default, skip_serializing_if = "Option::is_none")]
+    pub cred_cmd: Option<String>,
+    #[serde(
+        rename = "cred_cmd_timeout_secs",
+        default = "default_cred_cmd_timeout",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cred_cmd_timeout_secs: Option<u64>,
+    /// Keep the resolved password in process memory for this account.
+    #[serde(rename = "cred_cmd_cache", default = "default_true")]
+    pub cred_cmd_cache: bool,
     #[serde(default = "default_timeout", skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
 }
@@ -72,26 +109,75 @@ impl AccountConfig {
         self.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS)
     }
 
-    /// Resolve the password without ever logging it. A missing/empty
-    /// environment variable is a hard error (never fall back to plaintext).
-    pub fn resolve_password(&self) -> Result<String> {
-        match (&self.password, &self.password_env) {
-            (Some(password), None) => Ok(password.clone()),
-            (None, Some(var)) => match std::env::var(var) {
-                Ok(value) if !value.is_empty() => Ok(value),
-                Ok(_) => Err(HeraldError::Config(format!(
-                    "账户 {} 的环境变量 {var} 为空",
-                    self.name
-                ))),
-                Err(_) => Err(HeraldError::Config(format!(
-                    "账户 {} 的环境变量 {var} 不存在",
-                    self.name
-                ))),
-            },
-            _ => Err(HeraldError::Config(format!(
-                "账户 {} 必须且只能配置 password 或 password_env",
+    pub fn cred_cmd_timeout(&self) -> u64 {
+        self.cred_cmd_timeout_secs
+            .unwrap_or(DEFAULT_CRED_CMD_TIMEOUT_SECS)
+    }
+
+    /// Determine the configured credential source and enforce the three-way
+    /// exclusivity rule. Empty `cred-cmd` is rejected here as well so callers
+    /// that skip full config validation still get a clear error.
+    pub fn credential_source(&self) -> Result<CredentialSource> {
+        let configured = [
+            self.password.is_some(),
+            self.password_env.is_some(),
+            self.cred_cmd.is_some(),
+        ]
+        .into_iter()
+        .filter(|flag| *flag)
+        .count();
+        match configured {
+            0 => Err(HeraldError::Config(format!(
+                "账户 {} 必须且只能配置 cred-cmd、password_env、password 三者之一",
                 self.name
             ))),
+            1 => {
+                if let Some(password) = &self.password {
+                    return Ok(CredentialSource::Password(password.clone()));
+                }
+                if let Some(var) = &self.password_env {
+                    return Ok(CredentialSource::PasswordEnv(var.clone()));
+                }
+                let command = self.cred_cmd.as_deref().unwrap_or_default();
+                if command.trim().is_empty() {
+                    return Err(HeraldError::Config(format!(
+                        "账户 {} 的 cred-cmd 不能为空",
+                        self.name
+                    )));
+                }
+                Ok(CredentialSource::CredCmd(command.to_string()))
+            }
+            _ => Err(HeraldError::Config(format!(
+                "账户 {} 不能同时配置 cred-cmd、password_env、password（只能三选一）",
+                self.name
+            ))),
+        }
+    }
+
+    fn env_password(&self, var: &str) -> Result<String> {
+        match std::env::var(var) {
+            Ok(value) if !value.is_empty() => Ok(value),
+            Ok(_) => Err(HeraldError::Credential {
+                account: self.name.clone(),
+                message: format!("环境变量 {var} 为空"),
+            }),
+            Err(_) => Err(HeraldError::Credential {
+                account: self.name.clone(),
+                message: format!("环境变量 {var} 不存在"),
+            }),
+        }
+    }
+
+    /// Resolve the password without caching and without ever logging it. A
+    /// missing/empty environment variable is a hard error (never fall back to
+    /// plaintext); a failing `cred-cmd` never falls back either.
+    pub fn resolve_password(&self) -> Result<String> {
+        match self.credential_source()? {
+            CredentialSource::Password(password) => Ok(password),
+            CredentialSource::PasswordEnv(var) => self.env_password(&var),
+            CredentialSource::CredCmd(command) => {
+                crate::credentials::run_cred_cmd(&self.name, &command, self.cred_cmd_timeout())
+            }
         }
     }
 }
@@ -246,24 +332,16 @@ impl Config {
                     account.name
                 )));
             }
-            match (&account.password, &account.password_env) {
-                (Some(_), None) | (None, Some(_)) => {}
-                (Some(_), Some(_)) => {
-                    return Err(HeraldError::Config(format!(
-                        "账户 {} 不能同时配置 password 与 password_env",
-                        account.name
-                    )))
-                }
-                (None, None) => {
-                    return Err(HeraldError::Config(format!(
-                        "账户 {} 必须配置 password 或 password_env",
-                        account.name
-                    )))
-                }
-            }
+            account.credential_source()?;
             if account.timeout_secs == Some(0) {
                 return Err(HeraldError::Config(format!(
                     "账户 {} 的 timeout_secs 必须大于 0",
+                    account.name
+                )));
+            }
+            if account.cred_cmd_timeout_secs == Some(0) {
+                return Err(HeraldError::Config(format!(
+                    "账户 {} 的 cred_cmd_timeout_secs 必须大于 0",
                     account.name
                 )));
             }
@@ -276,6 +354,31 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    /// Accounts that still store a plaintext password. Trial mode is excluded:
+    /// its demo account is generated by Herald itself, not by the user.
+    pub fn plaintext_accounts(&self) -> Vec<String> {
+        if self.demo {
+            return Vec::new();
+        }
+        self.accounts
+            .iter()
+            .filter(|account| account.password.is_some())
+            .map(|account| account.name.clone())
+            .collect()
+    }
+
+    /// One-line CLI advice; `None` when no account uses a plaintext password.
+    pub fn plaintext_notice(&self) -> Option<String> {
+        let names = self.plaintext_accounts();
+        if names.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "[安全建议] 账户 {} 使用明文 password；建议改用 cred-cmd 从系统凭据存储读取，详见 herald auth status。",
+            names.join("、")
+        ))
     }
 
     /// Account selection rules: explicit name wins; otherwise the configured
@@ -337,7 +440,18 @@ host = "mail.intra.example.com"
 port = 995
 security = "tls"                 # plain | stls | tls
 username = "alice"
-password = "plaintext"           # 与 password_env 二选一，建议改用 password_env
+# 凭据来源必须且只能三选一：cred-cmd / password_env / password
+# cred-cmd 示例（stdout 第一行为密码，不要交互式命令）：
+#   Windows PowerShell SecretManagement：
+# cred-cmd = "powershell -NoProfile -Command \"(Get-Secret -Name 'herald-work' -AsPlainText)\""
+#   macOS Keychain：
+# cred-cmd = "security find-generic-password -s 'herald-work' -w"
+#   Linux Secret Service / pass：
+# cred-cmd = "secret-tool lookup service herald username alice"
+# cred-cmd = "pass show herald/work/alice"
+# cred_cmd_timeout_secs = 30     # 默认 30 秒
+# cred_cmd_cache = true          # 默认缓存到进程内存，退出即清除
+password = "plaintext"           # 已弃用：仅用于本地试用，请迁移到 cred-cmd
 # password_env = "HERALD_WORK_PASSWORD"
 # timeout_secs = 30
 
@@ -405,12 +519,15 @@ mod tests {
             username: "u".into(),
             password: Some("p".into()),
             password_env: None,
+            cred_cmd: None,
+            cred_cmd_timeout_secs: None,
+            cred_cmd_cache: true,
             timeout_secs: None,
         }
     }
 
     #[test]
-    fn password_and_env_are_mutually_exclusive() {
+    fn credential_sources_are_mutually_exclusive() {
         let mut a = account("a");
         a.password_env = Some("X".into());
         let cfg = Config {
@@ -418,6 +535,113 @@ mod tests {
             ..Default::default()
         };
         assert!(cfg.validate().is_err());
+
+        let mut a = account("a");
+        a.cred_cmd = Some("echo p".into());
+        let cfg = Config {
+            accounts: vec![a],
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+
+        let mut a = account("a");
+        a.password = None;
+        a.cred_cmd = Some("echo p".into());
+        a.password_env = Some("X".into());
+        let cfg = Config {
+            accounts: vec![a],
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn empty_cred_cmd_is_rejected() {
+        let mut a = account("a");
+        a.password = None;
+        a.cred_cmd = Some("   ".into());
+        let cfg = Config {
+            accounts: vec![a],
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn cred_cmd_defaults_and_cache_flag() {
+        let cfg = Config::from_toml(
+            r#"
+[[accounts]]
+name = "a"
+host = "h"
+port = 110
+security = "plain"
+username = "u"
+cred-cmd = "echo p"
+"#,
+        )
+        .unwrap();
+        let account = &cfg.accounts[0];
+        assert_eq!(account.cred_cmd_timeout(), DEFAULT_CRED_CMD_TIMEOUT_SECS);
+        assert!(account.cred_cmd_cache);
+        assert_eq!(
+            account.credential_source().unwrap(),
+            CredentialSource::CredCmd("echo p".into())
+        );
+
+        let cfg = Config::from_toml(
+            r#"
+[[accounts]]
+name = "a"
+host = "h"
+port = 110
+security = "plain"
+username = "u"
+cred-cmd = "echo p"
+cred_cmd_timeout_secs = 5
+cred_cmd_cache = false
+"#,
+        )
+        .unwrap();
+        let account = &cfg.accounts[0];
+        assert_eq!(account.cred_cmd_timeout(), 5);
+        assert!(!account.cred_cmd_cache);
+        assert!(Config::from_toml(
+            r#"
+[[accounts]]
+name = "a"
+host = "h"
+port = 110
+security = "plain"
+username = "u"
+cred-cmd = "echo p"
+cred_cmd_timeout_secs = 0
+"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn plaintext_notice_lists_accounts_and_skips_demo() {
+        let cfg = Config::from_toml(
+            r#"
+[[accounts]]
+name = "a"
+host = "h"
+port = 110
+security = "plain"
+username = "u"
+password = "p"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.plaintext_accounts(), vec!["a".to_string()]);
+        assert!(cfg.plaintext_notice().unwrap().contains('a'));
+
+        let mut demo = Config::from_toml("demo = true").unwrap();
+        demo.accounts = cfg.accounts.clone();
+        assert!(demo.plaintext_accounts().is_empty());
+        assert!(demo.plaintext_notice().is_none());
     }
 
     #[test]

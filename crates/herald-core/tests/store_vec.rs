@@ -11,6 +11,9 @@ fn account() -> AccountConfig {
         username: "u".to_string(),
         password: Some("p".to_string()),
         password_env: None,
+        cred_cmd: None,
+        cred_cmd_timeout_secs: None,
+        cred_cmd_cache: true,
         timeout_secs: None,
     }
 }

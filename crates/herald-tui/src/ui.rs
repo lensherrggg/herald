@@ -45,6 +45,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Raw => draw_raw(frame, app),
         Mode::Help => draw_help(frame, app),
     }
+
+    if app.cred_notice {
+        draw_cred_notice(frame, app);
+    }
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
@@ -897,6 +901,37 @@ fn draw_help(frame: &mut Frame, app: &App) {
     frame.render_widget(paragraph, area);
 }
 
+fn draw_cred_notice(frame: &mut Frame, app: &App) {
+    let area = centered_fixed(frame.area(), 72, 13);
+    if area.width < 24 || area.height < 6 {
+        return;
+    }
+    frame.render_widget(Clear, area);
+    let accounts = app.plaintext_accounts.join("、");
+    let lines = vec![
+        Line::from(Span::styled(
+            "建议改用 cred-cmd",
+            Style::new().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(format!("检测到账户 {accounts} 使用明文密码（password）。")),
+        Line::from("把密码交给系统密钥环或密码管理器，由 cred-cmd 读取；"),
+        Line::from("Herald 只执行命令，不再保存明文密码。"),
+        Line::from(""),
+        Line::from("herald auth status   查看各账户凭据来源"),
+        Line::from("herald auth test     验证命令与 POP3 登录"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "按任意键关闭（下次启动仍会提示）",
+            Style::new().add_modifier(Modifier::DIM),
+        )),
+    ];
+    let paragraph = Paragraph::new(Text::from(lines))
+        .block(panel(" 安全建议 · 明文密码 ", true, app))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
 fn panel<'a>(title: impl Into<String>, focused: bool, app: &App) -> Block<'a> {
     let block = Block::default().borders(Borders::ALL).title(title.into());
     if focused {
@@ -995,7 +1030,8 @@ mod tests {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
-        let app = App::new(herald, runtime, None);
+        let mut app = App::new(herald, runtime, None);
+        app.dismiss_cred_notice();
         terminal.draw(|frame| draw(frame, &app)).unwrap();
         terminal
             .backend()

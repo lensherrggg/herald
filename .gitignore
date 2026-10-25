@@ -6,6 +6,9 @@
 # Requirement document stays out of version control (explicitly requested)
 /需求.md
 
+# Agent work logs stay out of version control
+/_work/
+
 # Portable instance artifacts
 herald.toml
 herald.db

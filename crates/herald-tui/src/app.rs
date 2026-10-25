@@ -222,6 +222,10 @@ pub struct App {
     /// Set when leaving an overlay so the next frame repaints the whole screen.
     pub full_redraw: bool,
     pub color: bool,
+    /// Accounts still configured with a plaintext password.
+    pub plaintext_accounts: Vec<String>,
+    /// One-time-per-startup advice overlay; any key dismisses it.
+    pub cred_notice: bool,
 }
 
 impl App {
@@ -230,6 +234,8 @@ impl App {
         let account = pick_account(&herald.config, &accounts, requested_account);
         let color = color_enabled();
         let page_size = herald.config.ui.page_size.max(1);
+        let plaintext_accounts = herald.config.plaintext_accounts();
+        let cred_notice = !plaintext_accounts.is_empty();
         let mut app = Self {
             herald,
             runtime,
@@ -265,6 +271,8 @@ impl App {
             quit: false,
             full_redraw: false,
             color,
+            plaintext_accounts,
+            cred_notice,
         };
         if app.account.is_none() {
             app.status = StatusMessage::error("没有可用账户，请先编辑 herald.toml");
@@ -277,6 +285,14 @@ impl App {
 
     pub fn paths(&self) -> &ResolvedPaths {
         &self.herald.paths
+    }
+
+    /// Close the plaintext-password advice; it reappears on the next startup.
+    pub fn dismiss_cred_notice(&mut self) {
+        if self.cred_notice {
+            self.cred_notice = false;
+            self.full_redraw = true;
+        }
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
@@ -777,6 +793,10 @@ impl App {
     pub fn handle_key(&mut self, key: KeyEvent) {
         if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
             self.quit = true;
+            return;
+        }
+        if self.cred_notice {
+            self.dismiss_cred_notice();
             return;
         }
         let was_overlay = self.mode.kind() != ModeKind::Browse;

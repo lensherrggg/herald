@@ -115,6 +115,9 @@ pub fn configure(config: &mut Config) -> Result<DemoSession> {
         username: "test".to_string(),
         password: Some("secret".to_string()),
         password_env: None,
+        cred_cmd: None,
+        cred_cmd_timeout_secs: None,
+        cred_cmd_cache: true,
         timeout_secs: Some(5),
     }];
     config.default_account = Some(DEMO_ACCOUNT.to_string());
@@ -148,8 +151,9 @@ pub fn initial_sync(config: &Config, mut store: Store) -> Result<(Store, Vec<Emb
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()?;
-                let outcome =
-                    runtime.block_on(sync::run(&config, &mut store, &account, &options))?;
+                let password = account.resolve_password()?;
+                let outcome = runtime
+                    .block_on(sync::run(&config, &mut store, &account, &options, password))?;
                 Ok(outcome.jobs)
             })();
             let _ = tx.send((store, result));

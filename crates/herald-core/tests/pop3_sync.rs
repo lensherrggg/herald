@@ -70,6 +70,9 @@ fn account(port: u16, security: Security) -> AccountConfig {
         username: "test".to_string(),
         password: Some(PASSWORD.to_string()),
         password_env: None,
+        cred_cmd: None,
+        cred_cmd_timeout_secs: None,
+        cred_cmd_cache: true,
         timeout_secs: Some(5),
     }
 }
@@ -400,6 +403,9 @@ async fn multi_account_requires_explicit_selection() {
         username: "test".to_string(),
         password: Some(PASSWORD.to_string()),
         password_env: None,
+        cred_cmd: None,
+        cred_cmd_timeout_secs: None,
+        cred_cmd_cache: true,
         timeout_secs: Some(5),
     });
     let herald = herald(config, temp.path());

@@ -423,6 +423,12 @@ fn truncate_text(text: &str, max: usize) -> (String, bool) {
 
 fn herald_error(err: HeraldError) -> CallToolResult {
     let code = err.code();
+    if err.is_credential() {
+        // Details (account name, command, stderr) stay in the local log; the
+        // agent only learns that the configuration needs attention.
+        tracing::warn!(%err, "MCP 工具调用因凭据获取失败而中止");
+        return error_result(code, "凭据获取失败，请检查配置");
+    }
     error_result(code, &err.to_string())
 }
 
@@ -558,6 +564,21 @@ mod tests {
         assert_eq!(page_limit(Some(100)).unwrap(), 100);
         assert!(page_limit(Some(0)).is_err());
         assert!(page_limit(Some(101)).is_err());
+    }
+
+    #[test]
+    fn credential_errors_are_masked_for_agents() {
+        let result = herald_error(HeraldError::CredCmdFailed {
+            account: "work".to_string(),
+            code: 3,
+        });
+        assert_eq!(result.is_error, Some(true));
+        let payload = result.structured_content.expect("structured content");
+        assert_eq!(payload["code"], "cred_cmd_failed");
+        assert_eq!(payload["message"], "凭据获取失败，请检查配置");
+        let text = format!("{:?}", result.content);
+        assert!(!text.contains("work"), "account leaked: {text}");
+        assert!(!text.contains("exit"), "command detail leaked: {text}");
     }
 
     #[test]

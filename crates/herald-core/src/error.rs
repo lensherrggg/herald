@@ -16,6 +16,21 @@ pub enum HeraldError {
     #[error("认证失败：{0}")]
     Auth(String),
 
+    #[error("凭据获取失败（账户 {account}）：{message}")]
+    Credential { account: String, message: String },
+
+    #[error("凭据获取失败（账户 {account}，cred-cmd）：命令不存在")]
+    CredCmdNotFound { account: String },
+
+    #[error("凭据获取失败（账户 {account}，cred-cmd）：命令退出码 {code}")]
+    CredCmdFailed { account: String, code: i32 },
+
+    #[error("凭据获取失败（账户 {account}，cred-cmd）：执行超时（{secs} 秒）")]
+    CredCmdTimeout { account: String, secs: u64 },
+
+    #[error("凭据获取失败（账户 {account}，cred-cmd）：输出为空")]
+    CredCmdEmptyOutput { account: String },
+
     #[error("POP3 错误：{0}")]
     Pop3(String),
 
@@ -60,7 +75,12 @@ impl HeraldError {
                 "CONFIG_ERROR"
             }
             HeraldError::Account(_) => "ACCOUNT_ERROR",
-            HeraldError::Auth(_) => "AUTH_ERROR",
+            HeraldError::Auth(_) => "auth_failed",
+            HeraldError::Credential { .. } => "credential_error",
+            HeraldError::CredCmdNotFound { .. } => "cred_cmd_not_found",
+            HeraldError::CredCmdFailed { .. } => "cred_cmd_failed",
+            HeraldError::CredCmdTimeout { .. } => "cred_cmd_timeout",
+            HeraldError::CredCmdEmptyOutput { .. } => "cred_cmd_empty_output",
             HeraldError::Pop3(_) => "POP3_ERROR",
             HeraldError::Timeout(_) => "TIMEOUT",
             HeraldError::Tls(_) => "TLS_ERROR",
@@ -72,6 +92,19 @@ impl HeraldError {
             HeraldError::Http(_) => "HTTP_ERROR",
             HeraldError::Unsupported(_) => "UNSUPPORTED",
         }
+    }
+
+    /// Credential-related failures may mention an account and a failure kind,
+    /// but never the password, command output or command stderr.
+    pub fn is_credential(&self) -> bool {
+        matches!(
+            self,
+            HeraldError::Credential { .. }
+                | HeraldError::CredCmdNotFound { .. }
+                | HeraldError::CredCmdFailed { .. }
+                | HeraldError::CredCmdTimeout { .. }
+                | HeraldError::CredCmdEmptyOutput { .. }
+        )
     }
 
     pub fn invalid(message: impl Into<String>) -> Self {

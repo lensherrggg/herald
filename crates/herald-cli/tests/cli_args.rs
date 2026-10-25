@@ -23,6 +23,7 @@ fn help_exposes_tui_subcommand() {
         "show",
         "status",
         "export-attachment",
+        "auth",
         "models",
     ] {
         assert!(text.contains(command), "missing {command}:\n{text}");

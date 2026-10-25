@@ -46,7 +46,8 @@ Herald 解决的是「让 Agent 稳定、受控、低 token 地读内网 POP3 �
 
 | 模块 | 职责 |
 |---|---|
-| `config` | TOML 反序列化、校验、账户解析、示例配置 |
+| `config` | TOML 反序列化、校验、账户解析、凭据来源判定、示例配置 |
+| `credentials` | `cred-cmd` 执行（sh / PowerShell、超时、stdout 首行）、进程内密码缓存 |
 | `paths` | 可执行文件目录/用户目录决策、目录可写探测、最终路径拼装、`describe()` |
 | `error` | `HeraldError` 及稳定的 MCP 错误码映射 |
 | `model` | 头/详情/摘要/附件/同步/搜索等跨层数据结构 |
@@ -115,11 +116,34 @@ PathLayout::resolve(--config?)
 - 只实现 CAPA/UIDL/LIST/TOP/RETR/QUIT（以及认证 USER/PASS），没有修改类命令。
 - 默认超时 30 秒，可按账户覆盖。
 
-### 4.2 增量同步流程
+### 4.2 凭据来源
+
+每个账户的 `cred-cmd` / `password_env` / `password` 必须且只能配一个，没有优先级叠加：
+
+```text
+credential_source()
+  ├─ password       → 直接使用（已弃用；启动日志 warn）
+  ├─ password_env   → 读环境变量；空/缺失即失败，不回退明文
+  └─ cred-cmd       → 缓存命中？直接用
+                      否则 sh -c / powershell -NoProfile -Command 执行
+                           → 只取 stdout 第一行，去掉行尾 \n / \r，不 trim 空格
+                           → 空输出、非零退出、超时均为结构化失败
+                           → 成功且 cred_cmd_cache = true 时写入内存缓存
+```
+
+- 执行器使用同步 `std::process`，因为 `pop3_options()` 等入口是同步的；stdout/stderr 分别开线程排空，主线程轮询 `try_wait` 实现超时，超时后 kill。
+- 错误码：`cred_cmd_not_found`、`cred_cmd_failed`、`cred_cmd_timeout`、`cred_cmd_empty_output`、`credential_error`；错误文本只含账户与失败类别，不含 stdout/stderr。
+- 缓存键是账户名，内容只存在进程内存；MCP server 长时间运行时同一账户只执行一次命令，`cred_cmd_cache = false` 可关闭。
+- MCP 启动不预先执行命令；第一次需要网络（`sync_mailbox`、`get_message` 拉正文等）才解析。失败只终止该次工具调用，server 继续运行，且向 agent 只返回「凭据获取失败，请检查配置」。
+- Linux/macOS 走 `sh -c`，Windows 走 `powershell -NoProfile -Command`；Herald 不提供 TTY 透传，交互式命令必须改用非交互路径或 GUI pinentry。
+- 明文 `password` 时会提示迁移：TUI 每次启动显示一次浮窗（任意键关闭），CLI 每条命令首行 stderr 输出建议（不污染 `--json` stdout），日志另记 warn。
+
+### 4.3 增量同步流程
 
 ```text
 sync(options)
   account ← explicit / default / 唯一账户
+  password ← credentials.resolve(account)   // 失败即返回结构化错误
   client.connect
   server_uidls ← UIDL 全量
   known       ← 本地该账户 UIDL 集合
@@ -329,6 +353,7 @@ App
 - 单行输入框（主搜索、新建目录、原文查找、附件重命名）统一走 `text_input` 模块维护光标：`←`/`→`、`Home`/`End` 按 UTF-8 字符边界移动，`Backspace`/`Delete` 在光标处编辑，输入框按“光标前 / 光标块 / 光标后”三段渲染。
 - 宽终端（≥90 列）左右分栏；窄终端一次只显示焦点面板；极小终端显示尺寸提示。
 - 底部栏按模式/焦点给出短提示，完整快捷键放在 `h` 帮助页；窄终端进一步精简。
+- 启动时若检测到明文 `password`，最上层显示「安全建议」浮窗：说明可迁移到 `cred-cmd`，列出 `auth status` / `auth test` 入口；任意键只关闭浮窗，不触发该键原本的操作，下次启动仍会提示。
 - 从覆盖层（原文、搜索输入、帮助、账户、附件选择、文件浏览器）返回主界面时先 `Terminal::clear()` 再整屏重绘；部分终端不会主动刷新宽字符尾格，强制重绘可清除高亮背景残留的色块。
 - `NO_COLOR` 或 `TERM=dumb` 时用粗体/反色代替颜色。
 
@@ -356,11 +381,12 @@ App
 
 ## 12. 错误与降级
 
-`HeraldError` 统一映射为稳定错误码：`CONFIG_ERROR`、`ACCOUNT_ERROR`、`AUTH_ERROR`、`POP3_ERROR`、`TIMEOUT`、`TLS_ERROR`、`DB_ERROR`、`IO_ERROR`、`NOT_FOUND`、`INVALID_ARGUMENT`、`MODEL_ERROR`、`HTTP_ERROR`、`UNSUPPORTED`。
+`HeraldError` 统一映射为稳定错误码：`CONFIG_ERROR`、`ACCOUNT_ERROR`、`auth_failed`、`credential_error`、`cred_cmd_not_found`、`cred_cmd_failed`、`cred_cmd_timeout`、`cred_cmd_empty_output`、`POP3_ERROR`、`TIMEOUT`、`TLS_ERROR`、`DB_ERROR`、`IO_ERROR`、`NOT_FOUND`、`INVALID_ARGUMENT`、`MODEL_ERROR`、`HTTP_ERROR`、`UNSUPPORTED`。
 
 | 场景 | 策略 |
 |---|---|
 | exe 目录不可写 | 降级到用户目录，warn + 展示原因 |
+| `cred-cmd` 失败/超时/空输出 | 返回对应结构化错误，不回退其他凭据来源 |
 | 服务器不支持 CAPA | 按保守能力继续，UIDL 仍可通过 UIDL 命令获取 |
 | 服务器不支持 TOP | RETR 全量取头部 |
 | 单封邮件失败 | 写 `sync_errors`，继续整批 |
@@ -376,7 +402,10 @@ App
 ## 13. 测试策略
 
 - **单元测试**：配置校验、路径降级、分词/FTS 转义、解析编码、语义归一化、浏览器文件名与起始目录、TUI 格式化与分页。
+- **凭据来源**：stdout 多行/CRLF/空白、退出码、超时、命令不存在、缓存命中与关闭、三选一校验、空 `cred-cmd`；Windows 上真实走 `powershell -NoProfile -Command` 路径。
 - **集成测试（mock POP3）**：
+  - `cred-cmd` 输出固定密码完成同步；缓存开启时连续两次认证只执行一次命令，关闭时执行两次；
+  - `auth status` 不显示密码与命令全文，`auth test` 能完成一次真实 POP3 登录；
   - 三种连接模式与认证；
   - 增量同步、limit、无 TOP 回退、单封失败；
   - 中文搜索、字段限定、分页、本地已读状态、sqlite-vec 写入/查询；
@@ -405,6 +434,12 @@ App
 | 模型下载与加载解耦 | 支持离线分发、内网镜像与先下载后启用 |
 | 便携目录 + 显式降级 | 内网分发友好，只读安装位置仍可运行 |
 | 内置文件浏览器 | 跨平台一致、无 GUI 依赖、符合纯 TUI 定位 |
+| `cred-cmd` 替代内置 keyring | 跨平台行为一致、核心库零密钥环依赖、天然适配 MCP 非交互场景 |
+| 凭据三选一、不叠加优先级 | 行为最可预测，避免「明文悄悄兜底」 |
+| 只取 stdout 第一行且不 trim 空格 | 避免破坏含空格密码，同时明确丢弃换行 |
+| 默认开启会话内缓存 | 避免每次同步重复触发 GPG/DPAPI 解锁；代价是进程内存有明文 |
+| MCP 启动不预执行 `cred-cmd` | 避免启动阻塞，按首次认证需要触发 |
+| 不提供 TTY 透传 | 实现简单；交互式命令应由用户改用非交互路径 |
 
 ---
 

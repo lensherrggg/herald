@@ -160,10 +160,26 @@ enum Command {
         #[arg(long)]
         account: Option<String>,
     },
+    /// 检查账户凭据来源
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommand,
+    },
     /// 本地模型管理
     Models {
         #[command(subcommand)]
         command: ModelsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AuthCommand {
+    /// 列出各账户的凭据来源（不显示密码或命令全文）
+    Status,
+    /// 执行凭据获取并尝试一次 POP3 认证
+    Test {
+        #[arg(long)]
+        account: Option<String>,
     },
 }
 
@@ -192,9 +208,20 @@ fn main() -> ExitCode {
         command,
     } = Cli::parse();
     let tui = matches!(&command, Command::Tui { .. });
-    let log_dir = PathLayout::resolve(config.as_deref())
-        .ok()
-        .map(|layout| layout.log_dir());
+    let layout = PathLayout::resolve(config.as_deref()).ok();
+    // The plaintext advice must be the first line of stderr. Load the config
+    // before the logger is installed so log lines cannot get ahead of it; the
+    // TUI shows the same advice as an overlay instead.
+    if !tui && !matches!(&command, Command::Init { .. }) {
+        if let Some(layout) = &layout {
+            if let Ok(config) = Config::load(&layout.config_path) {
+                if let Some(notice) = config.plaintext_notice() {
+                    eprintln!("{notice}");
+                }
+            }
+        }
+    }
+    let log_dir = layout.as_ref().map(|layout| layout.log_dir());
     let _logging = logging::init(
         log_dir.as_deref(),
         if tui {
@@ -233,6 +260,10 @@ async fn run(config: Option<PathBuf>, json: bool, command: Command) -> anyhow::R
             unreachable!("handled before opening the async entry point")
         }
         Command::Accounts => accounts(&herald, json),
+        Command::Auth { command } => match command {
+            AuthCommand::Status => auth_status(&herald, json),
+            AuthCommand::Test { account } => auth_test(&herald, account, json).await,
+        },
         Command::Sync {
             account,
             all,
@@ -454,6 +485,85 @@ fn init(config_override: Option<&Path>, force: bool) -> anyhow::Result<()> {
         .with_context(|| format!("写入配置文件失败：{}", path.display()))?;
     println!("已生成配置文件：{}", path.display());
     println!("请修改账户信息后运行：herald sync");
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct AuthStatusRow {
+    account: String,
+    source: String,
+    detail: String,
+}
+
+fn auth_status(herald: &Herald, json: bool) -> anyhow::Result<()> {
+    let shell_ready = herald_core::credentials::shell_available();
+    let shell = herald_core::credentials::shell_label();
+    let mut rows = Vec::with_capacity(herald.config.accounts.len());
+    for account in &herald.config.accounts {
+        let (source, detail) = match account.credential_source() {
+            Ok(herald_core::config::CredentialSource::Password(_)) => (
+                "password".to_string(),
+                "明文密码（已弃用，建议迁移到 cred-cmd）".to_string(),
+            ),
+            Ok(herald_core::config::CredentialSource::PasswordEnv(var)) => {
+                let set = std::env::var(&var).map(|v| !v.is_empty()).unwrap_or(false);
+                (
+                    "password_env".to_string(),
+                    format!(
+                        "环境变量 {var} {}",
+                        if set {
+                            "已设置"
+                        } else {
+                            "未设置（不可用）"
+                        }
+                    ),
+                )
+            }
+            Ok(herald_core::config::CredentialSource::CredCmd(_)) => (
+                "cred-cmd".to_string(),
+                format!(
+                    "{} · 超时 {}s · 缓存 {}",
+                    if shell_ready {
+                        format!("可执行（{shell} 可用）")
+                    } else {
+                        format!("不可用（找不到 {shell}）")
+                    },
+                    account.cred_cmd_timeout(),
+                    if account.cred_cmd_cache { "开" } else { "关" }
+                ),
+            ),
+            Err(err) => ("missing".to_string(), err.to_string()),
+        };
+        rows.push(AuthStatusRow {
+            account: account.name.clone(),
+            source,
+            detail,
+        });
+    }
+    if json {
+        print_json(&serde_json::json!({ "accounts": rows }))?;
+        return Ok(());
+    }
+    if rows.is_empty() {
+        println!("没有配置账户。");
+        return Ok(());
+    }
+    println!("{:<16} {:<14} 状态", "账户", "来源");
+    for row in &rows {
+        println!("{:<16} {:<14} {}", row.account, row.source, row.detail);
+    }
+    Ok(())
+}
+
+async fn auth_test(herald: &Herald, account: Option<String>, json: bool) -> anyhow::Result<()> {
+    let report = herald.test_account(account.as_deref()).await?;
+    if json {
+        print_json(&report)?;
+    } else {
+        println!("账户：{}", report.account);
+        println!("凭据来源：{}", report.source);
+        println!("认证成功：{}:{}", report.host, report.port);
+    }
     Ok(())
 }
 

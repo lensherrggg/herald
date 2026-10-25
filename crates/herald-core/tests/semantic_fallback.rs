@@ -39,6 +39,9 @@ async fn setup(dir: &Path) -> (Herald, MockPop3Server) {
             username: "test".to_string(),
             password: Some("secret".to_string()),
             password_env: None,
+            cred_cmd: None,
+            cred_cmd_timeout_secs: None,
+            cred_cmd_cache: true,
             timeout_secs: Some(5),
         }],
         ..Default::default()
