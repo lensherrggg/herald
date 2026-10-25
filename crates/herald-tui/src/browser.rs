@@ -91,6 +91,7 @@ impl Browser {
         if entry.is_dir {
             self.dir = entry.path;
             self.selected = 0;
+            self.note = None;
             self.refresh();
         } else {
             self.filename = entry.name;
@@ -110,6 +111,7 @@ impl Browser {
         }
         self.dir = parent;
         self.selected = 0;
+        self.note = None;
         self.refresh();
         true
     }
@@ -156,6 +158,8 @@ impl Browser {
         if entry.is_dir {
             if entry.name == ".." {
                 "..（上一级）".to_string()
+            } else if entry.path.parent().is_none() {
+                entry.name.clone()
             } else {
                 format!("{}/", entry.name)
             }
@@ -174,6 +178,8 @@ fn read_entries(dir: &Path) -> std::io::Result<Vec<BrowserEntry>> {
             path: parent.to_path_buf(),
             is_dir: true,
         });
+    } else {
+        dirs.extend(drive_entries(dir));
     }
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -199,6 +205,34 @@ fn read_entries(dir: &Path) -> std::io::Result<Vec<BrowserEntry>> {
     files.sort_by_key(|entry| entry.name.to_lowercase());
     dirs.extend(files);
     Ok(dirs)
+}
+
+#[cfg(windows)]
+fn drive_entries(current: &Path) -> Vec<BrowserEntry> {
+    // SAFETY: GetLogicalDrives takes no arguments and only returns a bitmask.
+    let mask = unsafe { windows_sys::Win32::Storage::FileSystem::GetLogicalDrives() };
+    drives_from_mask(mask, current)
+}
+
+#[cfg(windows)]
+fn drives_from_mask(mask: u32, current: &Path) -> Vec<BrowserEntry> {
+    (0u8..26)
+        .filter(|index| mask & (1u32 << index) != 0)
+        .filter_map(|index| {
+            let name = format!("{}:\\", (b'A' + index) as char);
+            let path = PathBuf::from(&name);
+            (!current.starts_with(&path)).then_some(BrowserEntry {
+                name,
+                path,
+                is_dir: true,
+            })
+        })
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn drive_entries(_current: &Path) -> Vec<BrowserEntry> {
+    Vec::new()
 }
 
 fn resolve_start(start: PathBuf) -> (PathBuf, Option<String>) {
@@ -294,6 +328,18 @@ mod tests {
         browser.selected = 0;
         browser.enter();
         assert_eq!(browser.dir, temp.path().parent().unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn lists_other_drive_letters_at_the_root() {
+        assert!(Path::new("D:\\").parent().is_none());
+        let mask = (1u32 << 2) | (1u32 << 3);
+        let entries = drives_from_mask(mask, Path::new("D:\\"));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "C:\\");
+        assert!(entries[0].is_dir);
+        assert_eq!(Browser::entry_label(&entries[0]), "C:\\");
     }
 
     #[test]

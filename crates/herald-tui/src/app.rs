@@ -1055,7 +1055,9 @@ impl App {
             KeyCode::PageDown => browser.move_by(10),
             KeyCode::PageUp => browser.move_by(-10),
             KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') => {
-                browser.go_up();
+                if !browser.go_up() {
+                    browser.note = Some("已到根目录；如有其他盘符，可在列表中选择".to_string());
+                }
             }
             KeyCode::Enter => browser.enter(),
             KeyCode::Char('f') | KeyCode::Tab => browser.focus_filename(),
