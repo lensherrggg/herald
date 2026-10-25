@@ -442,6 +442,31 @@ pub fn select_new_uidls(
     new
 }
 
+/// Fetch the raw RFC822 source of `uidl` without touching any local state.
+pub async fn fetch_raw_uidl(options: &Pop3Options, uidl: &str) -> Result<Vec<u8>> {
+    let mut client = Pop3Client::connect(options).await?;
+    let listing = match client.uidl().await {
+        Ok(listing) => listing,
+        Err(err) => {
+            let _ = client.quit().await;
+            return Err(err);
+        }
+    };
+    let number = listing
+        .iter()
+        .find(|(_, candidate)| candidate == uidl)
+        .map(|(number, _)| *number);
+    let Some(number) = number else {
+        let _ = client.quit().await;
+        return Err(HeraldError::not_found(format!(
+            "服务器上不存在邮件：{uidl}"
+        )));
+    };
+    let result = client.retr(number).await;
+    let _ = client.quit().await;
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

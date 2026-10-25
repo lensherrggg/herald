@@ -8,7 +8,7 @@ use crate::model::{
 };
 use crate::parse::parse_message;
 use crate::paths::{PathLayout, ResolvedPaths};
-use crate::pop3::{Pop3Client, Pop3Options};
+use crate::pop3::{self, Pop3Options};
 use crate::search::index_text;
 use crate::store::Store;
 use crate::sync::{self, EmbeddingJob};
@@ -101,7 +101,7 @@ impl Herald {
 
     pub async fn sync(&mut self, options: SyncOptions) -> Result<SyncReport> {
         let account = self.config.resolve_account(options.account.as_deref())?.clone();
-        let outcome = sync::run(&self.config, &self.store, &account, &options).await?;
+        let outcome = sync::run(&self.config, &mut self.store, &account, &options).await?;
         if options.with_embeddings {
             let jobs = if options.index {
                 let account_id = self.store.account_id(&account.name)?;
@@ -210,7 +210,8 @@ impl Herald {
         if !fetch_body || detail.body_cached {
             return Ok(detail);
         }
-        let raw = self.fetch_raw(&account, uidl).await?;
+        let options = Pop3Options::from_account(&account, account.resolve_password()?);
+        let raw = pop3::fetch_raw_uidl(&options, uidl).await?;
         let parsed = parse_message(&raw, uidl, detail.header.size, false)?;
         let message_id = self.store.upsert_header(account_id, &parsed.header)?;
         let tokens = index_text(
@@ -270,7 +271,8 @@ impl Herald {
             Err(err) => return Err(err),
         }
 
-        let raw = self.fetch_raw(&account, uidl).await?;
+        let options = Pop3Options::from_account(&account, account.resolve_password()?);
+        let raw = pop3::fetch_raw_uidl(&options, uidl).await?;
         let parsed = parse_message(&raw, uidl, 0, true)?;
         let message_id = self.store.upsert_header(account_id, &parsed.header)?;
         let body_cached = self.store.body_is_cached(account_id, uidl)?;
@@ -357,35 +359,17 @@ impl Herald {
         default_export_base(self.config.export_dir(), last)
     }
 
-    pub async fn raw_message(&self, account: Option<&str>, uidl: &str) -> Result<Vec<u8>> {
+    /// Resolve an account into connection options without opening a socket.
+    /// Used by callers that must release the borrow on `Herald` before awaiting.
+    pub fn pop3_options(&self, account: Option<&str>) -> Result<Pop3Options> {
         let account = self.account(account)?;
-        self.fetch_raw(&account, uidl).await
+        let password = account.resolve_password()?;
+        Ok(Pop3Options::from_account(&account, password))
     }
 
-    async fn fetch_raw(&self, account: &AccountConfig, uidl: &str) -> Result<Vec<u8>> {
-        let password = account.resolve_password()?;
-        let options = Pop3Options::from_account(account, password);
-        let mut client = Pop3Client::connect(&options).await?;
-        let listing = match client.uidl().await {
-            Ok(listing) => listing,
-            Err(err) => {
-                let _ = client.quit().await;
-                return Err(err);
-            }
-        };
-        let number = listing
-            .iter()
-            .find(|(_, candidate)| candidate == uidl)
-            .map(|(number, _)| *number);
-        let Some(number) = number else {
-            let _ = client.quit().await;
-            return Err(HeraldError::not_found(format!(
-                "服务器上不存在邮件：{uidl}"
-            )));
-        };
-        let result = client.retr(number).await;
-        let _ = client.quit().await;
-        result
+    pub async fn raw_message(&self, account: Option<&str>, uidl: &str) -> Result<Vec<u8>> {
+        let options = self.pop3_options(account)?;
+        pop3::fetch_raw_uidl(&options, uidl).await
     }
 
     #[cfg(feature = "semantic")]

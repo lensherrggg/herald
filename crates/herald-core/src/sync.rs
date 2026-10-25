@@ -19,7 +19,7 @@ pub struct SyncOutcome {
 
 pub async fn run(
     config: &Config,
-    store: &Store,
+    store: &mut Store,
     account: &AccountConfig,
     options: &SyncOptions,
 ) -> Result<SyncOutcome> {
@@ -31,7 +31,7 @@ pub async fn run(
 /// Connection injection point used by the integration tests (custom CA roots).
 pub async fn run_with_options(
     config: &Config,
-    store: &Store,
+    store: &mut Store,
     account: &AccountConfig,
     options: &SyncOptions,
     pop3_options: Pop3Options,
@@ -146,7 +146,7 @@ struct Processed {
 #[allow(clippy::too_many_arguments)]
 async fn process_one(
     client: &mut Pop3Client,
-    store: &Store,
+    store: &mut Store,
     account_id: i64,
     number: u32,
     uidl: &str,
