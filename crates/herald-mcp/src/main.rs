@@ -481,7 +481,7 @@ async fn serve(handler: HeraldHandler) -> ExitCode {
 
 fn config_path() -> std::result::Result<Option<PathBuf>, String> {
     let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
+    if let Some(arg) = args.next() {
         match arg.as_str() {
             "--config" => {
                 return args

@@ -620,11 +620,9 @@ impl App {
             KeyCode::Char('[') => self.previous_page(),
             KeyCode::PageDown => self.next_page(),
             KeyCode::PageUp => self.previous_page(),
-            KeyCode::Down | KeyCode::Char('j') => {
-                if !self.messages.is_empty() {
-                    self.selected = (self.selected + 1).min(self.messages.len() - 1);
-                    self.detail = None;
-                }
+            KeyCode::Down | KeyCode::Char('j') if !self.messages.is_empty() => {
+                self.selected = (self.selected + 1).min(self.messages.len() - 1);
+                self.detail = None;
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected = self.selected.saturating_sub(1);
@@ -712,10 +710,8 @@ impl App {
     fn handle_accounts_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Browse,
-            KeyCode::Down | KeyCode::Char('j') => {
-                if !self.accounts.is_empty() {
-                    self.account_pick = (self.account_pick + 1).min(self.accounts.len() - 1);
-                }
+            KeyCode::Down | KeyCode::Char('j') if !self.accounts.is_empty() => {
+                self.account_pick = (self.account_pick + 1).min(self.accounts.len() - 1);
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.account_pick = self.account_pick.saturating_sub(1);

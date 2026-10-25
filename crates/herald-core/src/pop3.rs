@@ -81,7 +81,7 @@ impl Capabilities {
 
 enum Conn {
     Plain(TcpStream),
-    Tls(TlsStream<TcpStream>),
+    Tls(Box<TlsStream<TcpStream>>),
     /// Temporary placeholder used while upgrading a plain connection to TLS.
     Closed,
 }
@@ -94,7 +94,7 @@ impl AsyncRead for Conn {
     ) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
             Conn::Plain(stream) => Pin::new(stream).poll_read(cx, buf),
-            Conn::Tls(stream) => Pin::new(stream).poll_read(cx, buf),
+            Conn::Tls(stream) => Pin::new(stream.as_mut()).poll_read(cx, buf),
             Conn::Closed => Poll::Ready(Ok(())),
         }
     }
@@ -108,7 +108,7 @@ impl AsyncWrite for Conn {
     ) -> Poll<std::io::Result<usize>> {
         match self.get_mut() {
             Conn::Plain(stream) => Pin::new(stream).poll_write(cx, buf),
-            Conn::Tls(stream) => Pin::new(stream).poll_write(cx, buf),
+            Conn::Tls(stream) => Pin::new(stream.as_mut()).poll_write(cx, buf),
             Conn::Closed => Poll::Ready(Err(std::io::Error::other("连接已关闭"))),
         }
     }
@@ -116,7 +116,7 @@ impl AsyncWrite for Conn {
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
             Conn::Plain(stream) => Pin::new(stream).poll_flush(cx),
-            Conn::Tls(stream) => Pin::new(stream).poll_flush(cx),
+            Conn::Tls(stream) => Pin::new(stream.as_mut()).poll_flush(cx),
             Conn::Closed => Poll::Ready(Ok(())),
         }
     }
@@ -124,7 +124,7 @@ impl AsyncWrite for Conn {
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
             Conn::Plain(stream) => Pin::new(stream).poll_shutdown(cx),
-            Conn::Tls(stream) => Pin::new(stream).poll_shutdown(cx),
+            Conn::Tls(stream) => Pin::new(stream.as_mut()).poll_shutdown(cx),
             Conn::Closed => Poll::Ready(Ok(())),
         }
     }
@@ -178,7 +178,7 @@ impl Pop3Client {
                 )
                 .await
                 .map_err(|_| HeraldError::Timeout(timeout.as_secs()))??;
-                Conn::Tls(tls)
+                Conn::Tls(Box::new(tls))
             }
         };
 
@@ -229,7 +229,7 @@ impl Pop3Client {
         )
         .await
         .map_err(|_| HeraldError::Timeout(self.timeout.as_secs()))??;
-        self.conn = Conn::Tls(tls);
+        self.conn = Conn::Tls(Box::new(tls));
         Ok(())
     }
 

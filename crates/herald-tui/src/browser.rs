@@ -177,7 +177,7 @@ fn read_entries(dir: &Path) -> std::io::Result<Vec<BrowserEntry>> {
         }
         a.name.to_lowercase().cmp(&b.name.to_lowercase())
     });
-    files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    files.sort_by_key(|entry| entry.name.to_lowercase());
     dirs.extend(files);
     Ok(dirs)
 }

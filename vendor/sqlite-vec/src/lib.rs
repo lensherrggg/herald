@@ -10,6 +10,7 @@ mod tests {
     use rusqlite::{ffi::sqlite3_auto_extension, Connection};
 
     #[test]
+    #[allow(clippy::missing_transmute_annotations)]
     fn test_rusqlite_auto_extension() {
         unsafe {
             sqlite3_auto_extension(Some(std::mem::transmute(sqlite3_vec_init as *const ())));

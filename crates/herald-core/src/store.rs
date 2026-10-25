@@ -15,6 +15,8 @@ use crate::model::{
 use crate::search;
 
 pub const EMBEDDING_DIM: usize = 512;
+
+type BodyRow = (i64, String, Option<String>, Option<String>, Option<String>);
 const SCHEMA_VERSION: i64 = 1;
 
 pub fn now_rfc3339() -> String {
@@ -757,10 +759,7 @@ impl Store {
         )?)
     }
 
-    pub fn messages_with_body(
-        &self,
-        account_id: i64,
-    ) -> Result<Vec<(i64, String, Option<String>, Option<String>, Option<String>)>> {
+    pub fn messages_with_body(&self, account_id: i64) -> Result<Vec<BodyRow>> {
         let mut stmt = self.conn.prepare(
             r#"
             SELECT id, uidl, subject, from_addr, body_text
@@ -926,6 +925,7 @@ fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {
 
 static VEC_INIT: Once = Once::new();
 
+#[allow(clippy::missing_transmute_annotations)]
 fn register_sqlite_vec() {
     VEC_INIT.call_once(|| unsafe {
         rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(

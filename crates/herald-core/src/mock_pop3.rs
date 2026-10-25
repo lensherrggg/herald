@@ -127,7 +127,7 @@ impl Drop for MockPop3Server {
 
 enum MockStream {
     Plain(TcpStream),
-    Tls(tokio_rustls::server::TlsStream<TcpStream>),
+    Tls(Box<tokio_rustls::server::TlsStream<TcpStream>>),
 }
 
 impl MockStream {
@@ -147,7 +147,7 @@ impl AsyncRead for MockStream {
     ) -> Poll<io::Result<()>> {
         match self.get_mut() {
             MockStream::Plain(stream) => Pin::new(stream).poll_read(cx, buf),
-            MockStream::Tls(stream) => Pin::new(stream).poll_read(cx, buf),
+            MockStream::Tls(stream) => Pin::new(stream.as_mut()).poll_read(cx, buf),
         }
     }
 }
@@ -160,21 +160,21 @@ impl AsyncWrite for MockStream {
     ) -> Poll<io::Result<usize>> {
         match self.get_mut() {
             MockStream::Plain(stream) => Pin::new(stream).poll_write(cx, buf),
-            MockStream::Tls(stream) => Pin::new(stream).poll_write(cx, buf),
+            MockStream::Tls(stream) => Pin::new(stream.as_mut()).poll_write(cx, buf),
         }
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match self.get_mut() {
             MockStream::Plain(stream) => Pin::new(stream).poll_flush(cx),
-            MockStream::Tls(stream) => Pin::new(stream).poll_flush(cx),
+            MockStream::Tls(stream) => Pin::new(stream.as_mut()).poll_flush(cx),
         }
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match self.get_mut() {
             MockStream::Plain(stream) => Pin::new(stream).poll_shutdown(cx),
-            MockStream::Tls(stream) => Pin::new(stream).poll_shutdown(cx),
+            MockStream::Tls(stream) => Pin::new(stream.as_mut()).poll_shutdown(cx),
         }
     }
 }
@@ -189,7 +189,7 @@ async fn serve_connection(
         let acceptor = acceptor
             .as_ref()
             .ok_or_else(|| io::Error::other("missing TLS acceptor"))?;
-        MockStream::Tls(acceptor.accept(tcp).await?)
+        MockStream::Tls(Box::new(acceptor.accept(tcp).await?))
     } else {
         MockStream::Plain(tcp)
     });
@@ -199,10 +199,7 @@ async fn serve_connection(
     let mut authed = false;
     let mut pending_user = String::new();
 
-    loop {
-        let Some(stream_ref) = stream.as_mut() else {
-            break;
-        };
+    while let Some(stream_ref) = stream.as_mut() {
         let Some(line) = read_line(stream_ref, &mut buffer).await? else {
             break;
         };
@@ -253,7 +250,7 @@ async fn serve_connection(
                     .into_plain()
                     .ok_or_else(|| io::Error::other("already TLS"))?;
                 let upgraded = acceptor.accept(tcp).await?;
-                stream = Some(MockStream::Tls(upgraded));
+                stream = Some(MockStream::Tls(Box::new(upgraded)));
                 tls_active = true;
                 authed = false;
                 pending_user.clear();

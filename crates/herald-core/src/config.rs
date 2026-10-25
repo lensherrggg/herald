@@ -147,7 +147,7 @@ impl Default for SemanticConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database: Option<String>,
@@ -161,19 +161,6 @@ pub struct Config {
     pub attachments: AttachmentsConfig,
     #[serde(default)]
     pub semantic: SemanticConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            database: None,
-            default_account: None,
-            accounts: Vec::new(),
-            sync: SyncConfig::default(),
-            attachments: AttachmentsConfig::default(),
-            semantic: SemanticConfig::default(),
-        }
-    }
 }
 
 impl Config {
