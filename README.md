@@ -220,7 +220,7 @@ cargo run -p herald-core --features test-support --example mock_pop3 -- --dir D:
 ./target/debug/herald.exe --config D:/herald-demo/herald.toml tui
 ```
 
-默认生成 25 封样例邮件（含分页），最新一封带 `说明.txt` 和 `data.bin` 两个附件；可搜索“会议”，或按 `Enter` 打开最新邮件后按 `e` 试导出。服务会打印实际端口、配置路径和可直接复制的命令，按 `Ctrl+C` 停止。
+默认生成 25 封样例邮件（含分页）。内容覆盖：纯文本、HTML、multipart/alternative、UTF-8/GBK/BIG5、8bit/base64/quoted-printable、无主题、空正文、折叠长主题，以及 PDF/文本/二进制/内嵌图片附件。最新一封“本周项目进度汇报”带 `说明.txt`、`data.bin` 和内嵌 `logo.png`；“电子发票（仅附件）”只有 `发票.pdf`。可搜索“对账”或“评审”，或在 TUI 里选中邮件按 `e` 试导出。服务会打印实际端口、配置路径和可直接复制的命令，按 `Ctrl+C` 停止。
 
 可选参数：`--messages <1-28>`、`--port <port>`（默认自动分配）、`--no-top` 模拟不支持 TOP 的服务器。
 
