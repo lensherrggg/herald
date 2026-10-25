@@ -39,3 +39,7 @@ webpki-roots.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[[example]]
+name = "mock_pop3"
+required-features = ["test-support"]

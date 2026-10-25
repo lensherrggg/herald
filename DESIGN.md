@@ -334,6 +334,7 @@ App
   - MCP 真实二进制 stdio 往返，逐个验证 7 个工具与错误码；
   - TUI 使用 `TestBackend` 渲染真实邮件、详情、搜索、原文、附件选择、文件浏览器、新建目录、导出、窄终端与无颜色。
 - **CI**：Ubuntu/macOS/Windows 三平台 `fmt + clippy + test`。
+- **手工试用**：`examples/mock_pop3.rs` 可启动带中文、HTML 和附件的 mock POP3 服务，并生成 `herald.toml`，用于在无真实邮箱时走查 CLI 与 TUI。
 - **未自动化**：真实终端中的键盘输入、终端模拟器差异、不同字体下的中文宽度；发布前建议按 M7 做一次人工走查。
 
 ---

@@ -13,6 +13,9 @@ models/
 *.part
 herald-state.json
 
+# Mock POP3 demo output
+/herald-demo/
+
 # Local environment
 .env
 .env.*

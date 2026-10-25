@@ -199,6 +199,27 @@ TUI 已并入 `herald`，不再单独产出 `herald-tui` 可执行文件。
 - 起始目录优先级：`attachments.export_dir` → 上次导出目录 → 系统 Downloads → 用户主目录；
 - 终端小于 `40×8` 时显示提示，不崩溃；设置 `NO_COLOR=1` 或 `TERM=dumb` 时关闭颜色。
 
+#### 用假邮件试用（无需真实邮箱）
+
+仓库自带一个可运行的 mock POP3 服务，会生成中文邮件、HTML 和附件，并写好试用配置。
+
+终端 A 启动服务：
+
+```bash
+cargo run -p herald-core --features test-support --example mock_pop3 -- --dir D:/herald-demo
+```
+
+终端 B 同步并打开 TUI：
+
+```bash
+./target/debug/herald.exe --config D:/herald-demo/herald.toml sync --all --with-attachments
+./target/debug/herald.exe --config D:/herald-demo/herald.toml tui
+```
+
+默认生成 25 封样例邮件（含分页），最新一封带 `说明.txt` 和 `data.bin` 两个附件；可搜索“会议”，或按 `Enter` 打开最新邮件后按 `e` 试导出。服务会打印实际端口、配置路径和可直接复制的命令，按 `Ctrl+C` 停止。
+
+可选参数：`--messages <1-28>`、`--port <port>`（默认自动分配）、`--no-top` 模拟不支持 TOP 的服务器。
+
 ### 4.5 MCP
 
 ```json
