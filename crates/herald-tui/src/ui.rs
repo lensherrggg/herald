@@ -8,7 +8,7 @@ use ratatui::Frame;
 
 use crate::app::{
     attachment_line, body_text, format_size, join_addrs, raw_rows, sender_short, shorten_date,
-    wrap_line, App, Focus, Mode,
+    wrap_line, App, Focus, Mode, RawRow,
 };
 use crate::browser::Browser;
 use herald_core::model::{SearchField, SearchKind};
@@ -259,9 +259,9 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
                 } else if matched {
                     "n/N 上下匹配 · / 重新查找 · Esc 返回"
                 } else if area.width < 70 {
-                    "/ 查找 · ↑↓ 行 · PgDn 翻页 · Esc 返回"
+                    "/ 查找 · ↑↓ 行 · 空格/f 下页 · b 上页 · Esc 返回"
                 } else {
-                    "/ 查找 · ↑↓ 行 · 空格/PgDn 翻页 · g/G 首尾 · Esc 返回"
+                    "/ 查找 · ↑↓ 行 · 空格/f 下页 · b 上页 · d/u 半页 · g/G 首尾 · Esc 返回"
                 }
             }
             Mode::Help => "Esc 返回",
@@ -479,12 +479,14 @@ fn draw_raw(frame: &mut Frame, app: &App) {
     app.raw_width.set(inner_width);
     app.raw_height
         .set(content_area.height.saturating_sub(2).max(1));
+    let rows = raw_rows(app.raw.as_deref().unwrap_or(""), inner_width);
+    app.raw_rows_total.set(rows.len());
     let title = if app.raw_truncated {
         " 原始邮件（已截断）· Esc 返回 "
     } else {
         " 原始邮件 · Esc 返回 "
     };
-    let paragraph = Paragraph::new(raw_text(app, inner_width))
+    let paragraph = Paragraph::new(raw_text(app, &rows))
         .block(panel(title, true, app))
         .scroll((app.raw_scroll, 0));
     frame.render_widget(paragraph, content_area);
@@ -493,9 +495,8 @@ fn draw_raw(frame: &mut Frame, app: &App) {
     }
 }
 
-fn raw_text(app: &App, width: u16) -> Text<'static> {
+fn raw_text(app: &App, rows: &[RawRow]) -> Text<'static> {
     let raw = app.raw.as_deref().unwrap_or("");
-    let rows = raw_rows(raw, width);
     let source: Vec<&str> = raw.lines().collect();
     let search = app
         .raw_search
@@ -503,7 +504,7 @@ fn raw_text(app: &App, width: u16) -> Text<'static> {
         .filter(|search| !search.matches.is_empty());
     let mut lines = Vec::with_capacity(rows.len());
     let mut cursor = 0usize;
-    for row in &rows {
+    for row in rows {
         let content = source.get(row.line).copied().unwrap_or("");
         let Some(search) = search else {
             lines.push(Line::from(content[row.start..row.end].to_string()));

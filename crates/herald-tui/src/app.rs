@@ -159,6 +159,8 @@ pub struct App {
     pub raw_width: Cell<u16>,
     /// Visible text height of the last raw-view render, used for paging.
     pub raw_height: Cell<u16>,
+    /// Wrapped row count from the last raw-view render, used for clamping.
+    pub raw_rows_total: Cell<usize>,
     pub mode: Mode,
     pub status: StatusMessage,
     pub focus: Focus,
@@ -199,6 +201,7 @@ impl App {
             raw_search: None,
             raw_width: Cell::new(80),
             raw_height: Cell::new(20),
+            raw_rows_total: Cell::new(0),
             mode: Mode::Browse,
             status: StatusMessage::default(),
             focus: Focus::List,
@@ -1001,22 +1004,42 @@ impl App {
             KeyCode::Char('/') => self.open_raw_search(),
             KeyCode::Char('n') => self.step_raw_match(true),
             KeyCode::Char('N') => self.step_raw_match(false),
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.raw_scroll = self.raw_scroll.saturating_add(1)
+            KeyCode::Down | KeyCode::Char('j') => self.scroll_raw_by(1),
+            KeyCode::Up | KeyCode::Char('k') => self.scroll_raw_by(-1),
+            KeyCode::PageDown | KeyCode::Char(' ') | KeyCode::Char('f') => {
+                self.scroll_raw_by(self.raw_page() as i32)
             }
-            KeyCode::Up | KeyCode::Char('k') => self.raw_scroll = self.raw_scroll.saturating_sub(1),
-            KeyCode::PageDown | KeyCode::Char(' ') => {
-                self.raw_scroll = self.raw_scroll.saturating_add(self.raw_page())
-            }
-            KeyCode::PageUp => self.raw_scroll = self.raw_scroll.saturating_sub(self.raw_page()),
+            KeyCode::PageUp | KeyCode::Char('b') => self.scroll_raw_by(-(self.raw_page() as i32)),
+            KeyCode::Char('d') => self.scroll_raw_by(self.half_raw_page()),
+            KeyCode::Char('u') => self.scroll_raw_by(-self.half_raw_page()),
             KeyCode::Char('g') => self.raw_scroll = 0,
-            KeyCode::Char('G') => self.raw_scroll = u16::MAX,
+            KeyCode::Char('G') => self.raw_scroll = self.raw_max_scroll(),
             _ => {}
         }
     }
 
     fn raw_page(&self) -> u16 {
         self.raw_height.get().max(1)
+    }
+
+    fn half_raw_page(&self) -> i32 {
+        (self.raw_page() / 2).max(1) as i32
+    }
+
+    fn raw_max_scroll(&self) -> u16 {
+        self.raw_rows_total
+            .get()
+            .saturating_sub(self.raw_page() as usize)
+            .min(u16::MAX as usize) as u16
+    }
+
+    fn scroll_raw_by(&mut self, delta: i32) {
+        let next = if delta >= 0 {
+            self.raw_scroll.saturating_add(delta as u16)
+        } else {
+            self.raw_scroll.saturating_sub((-delta) as u16)
+        };
+        self.raw_scroll = next.min(self.raw_max_scroll());
     }
 
     fn handle_raw_search_key(&mut self, key: KeyEvent) {
@@ -1128,7 +1151,8 @@ impl App {
         let Some(raw) = self.raw.as_deref() else {
             return;
         };
-        self.raw_scroll = raw_match_row(raw, matched, self.raw_width.get().max(1));
+        let row = raw_match_row(raw, matched, self.raw_width.get().max(1));
+        self.raw_scroll = row.min(self.raw_max_scroll());
     }
 
     pub fn scroll_detail(&mut self, delta: i16) {

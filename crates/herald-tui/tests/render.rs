@@ -662,7 +662,11 @@ fn raw_view_wraps_long_cjk_lines_without_splitting_labels() {
     let rows = render_rows(&app, 80, 30);
     let screen = rows.join("\n");
     assert!(screen.contains("1/20"), "{screen}");
-    let content = rows[1]
+    let row = rows
+        .iter()
+        .find(|row| compact(row).contains("第01段"))
+        .expect("body row");
+    let content = row
         .strip_prefix('│')
         .and_then(|row| row.strip_suffix('│'))
         .expect("bordered raw row");
@@ -745,6 +749,26 @@ fn raw_view_pages_by_the_visible_height() {
     assert_eq!(app.raw_scroll, page);
     app.handle_key(key(KeyCode::Down));
     assert_eq!(app.raw_scroll, page + 1);
+
+    app.handle_key(key(KeyCode::Char('G')));
+    let max = app.raw_scroll;
+    assert_eq!(max, 200 - page, "G must stop at the last visible page");
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.raw_scroll, max - 1, "scrolling up after G must work");
+
+    app.handle_key(key(KeyCode::Char('G')));
+    app.handle_key(key(KeyCode::Char('b')));
+    assert_eq!(app.raw_scroll, max - page);
+    app.handle_key(key(KeyCode::Char('G')));
+    app.handle_key(key(KeyCode::Char('f')));
+    assert_eq!(app.raw_scroll, max, "forward paging stops at the end");
+    app.handle_key(key(KeyCode::Char('G')));
+    app.handle_key(key(KeyCode::Char('u')));
+    assert_eq!(app.raw_scroll, max - page / 2);
+    app.handle_key(key(KeyCode::Char('G')));
+    app.handle_key(key(KeyCode::Char('d')));
+    assert_eq!(app.raw_scroll, max);
+
     app.handle_key(key(KeyCode::Char('g')));
     assert_eq!(app.raw_scroll, 0);
 }
