@@ -521,10 +521,12 @@ impl Herald {
 }
 
 fn safe_filename(filename: Option<&str>, index: usize) -> String {
+    // Split on both separators regardless of the host OS: attachment names
+    // come from the mail message, so a Windows-style path can arrive on Unix.
     let candidate = filename
-        .and_then(|name| Path::new(name).file_name())
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.trim().is_empty())
+        .and_then(|name| name.rsplit(['/', '\\']).next())
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && *name != "." && *name != "..")
         .map(str::to_string)
         .unwrap_or_else(|| format!("attachment-{index}.bin"));
     candidate.replace(['/', '\\', '\0'], "_")
@@ -674,6 +676,8 @@ mod tests {
     fn safe_filenames_strip_paths() {
         assert_eq!(safe_filename(Some("../../etc/passwd"), 0), "passwd");
         assert_eq!(safe_filename(Some("..\\evil.exe"), 0), "evil.exe");
+        assert_eq!(safe_filename(Some("folder/evil.exe"), 0), "evil.exe");
+        assert_eq!(safe_filename(Some(".."), 1), "attachment-1.bin");
         assert_eq!(safe_filename(None, 3), "attachment-3.bin");
     }
 
