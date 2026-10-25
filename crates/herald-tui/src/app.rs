@@ -656,7 +656,9 @@ impl App {
         let start = self.herald.export_base_dir();
         self.browser = Some(Browser::new(start, uidl, index, name));
         self.mode = Mode::Browser;
-        self.status = StatusMessage::info("选择目录后按 d 保存，或 f 编辑文件名");
+        self.status = StatusMessage::info(
+            "↑↓ 选择目录 · Enter 进入 · 退格/← 上一级 · d 存入当前目录 · f 改名",
+        );
     }
 
     pub fn export_to_dir(&mut self) {
@@ -1052,6 +1054,9 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => browser.move_by(-1),
             KeyCode::PageDown => browser.move_by(10),
             KeyCode::PageUp => browser.move_by(-10),
+            KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') => {
+                browser.go_up();
+            }
             KeyCode::Enter => browser.enter(),
             KeyCode::Char('f') | KeyCode::Tab => browser.focus_filename(),
             KeyCode::Char('d') => self.export_to_dir(),

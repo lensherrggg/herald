@@ -883,3 +883,28 @@ fn leaving_raw_search_clears_highlight_residue() {
         "highlight backgrounds must not linger on the main view"
     );
 }
+
+#[test]
+fn export_browser_navigates_to_the_parent_directory() {
+    let (mut app, dir) = synced_app(20, vec![message_one()]);
+    let exports = dir.path().join("exports");
+    let nested = exports.join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    app.browser = Some(Browser::new(
+        nested.clone(),
+        "m1".to_string(),
+        0,
+        "a.bin".to_string(),
+    ));
+    app.mode = herald_tui::app::Mode::Browser;
+
+    let screen = compact(&render(&app, 100, 40));
+    assert!(screen.contains("..（上一级）"), "{screen}");
+    assert!(screen.contains("退格上级"), "{screen}");
+
+    app.handle_key(key(KeyCode::Backspace));
+    assert_eq!(app.browser.as_ref().unwrap().dir, exports);
+
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.browser.as_ref().unwrap().dir, dir.path());
+}

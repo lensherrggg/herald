@@ -247,7 +247,9 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             Mode::Input(_) => "Enter 确认 · Tab 模式 · Ctrl+F 字段 · Esc 取消",
             Mode::Accounts => "↑↓ 选择 · Enter 切换 · Esc 取消",
             Mode::Attachments => "↑↓ 选择附件 · Enter 导出 · Esc 取消",
-            Mode::Browser => "↑↓ 选择 · Enter 进入 · d 保存 · f 改名 · n 新建 · Esc 取消",
+            Mode::Browser => {
+                "↑↓ 选择 · Enter 进入 · 退格 上级 · d 保存 · f 改名 · n 新建 · Esc 取消"
+            }
             Mode::Raw => {
                 let editing = app.raw_search.as_ref().is_some_and(|search| search.editing);
                 let matched = app
@@ -452,10 +454,9 @@ fn draw_browser(frame: &mut Frame, app: &App) {
     let filename = Line::from(filename_spans);
     frame.render_widget(Paragraph::new(filename), chunks[1]);
 
-    let note = browser
-        .note
-        .clone()
-        .unwrap_or_else(|| "d 存入当前目录（自动避开重名）· f 改文件名后 Enter 保存".to_string());
+    let note = browser.note.clone().unwrap_or_else(|| {
+        "Enter 进入目录/选文件 · 退格 上一级 · d 存入当前目录 · f 改名".to_string()
+    });
     frame.render_widget(
         Paragraph::new(Span::styled(
             note,
@@ -633,6 +634,7 @@ fn draw_help(frame: &mut Frame, app: &App) {
         Line::from("Tab          切换列表/详情焦点"),
         Line::from("r            查看原始邮件（/ 查找，n/N 跳转）"),
         Line::from("e            导出附件（内置文件浏览器）"),
+        Line::from("  浏览器      ↑↓ 选择 · Enter 进入 · 退格 上级 · d 保存 · f 改名"),
         Line::from("Esc          清除搜索 / 返回"),
         Line::from("q / Ctrl+C   退出"),
         Line::from(""),

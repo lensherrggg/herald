@@ -99,6 +99,21 @@ impl Browser {
         }
     }
 
+    /// Move to the parent directory. Returns false at the filesystem root.
+    pub fn go_up(&mut self) -> bool {
+        let Some(parent) = self.dir.parent() else {
+            return false;
+        };
+        let parent = parent.to_path_buf();
+        if parent == self.dir {
+            return false;
+        }
+        self.dir = parent;
+        self.selected = 0;
+        self.refresh();
+        true
+    }
+
     pub fn focus_filename(&mut self) {
         self.filename_cursor = self.filename.len();
         self.filename_focus = true;
@@ -140,7 +155,7 @@ impl Browser {
     pub fn entry_label(entry: &BrowserEntry) -> String {
         if entry.is_dir {
             if entry.name == ".." {
-                "..".to_string()
+                "..（上一级）".to_string()
             } else {
                 format!("{}/", entry.name)
             }
@@ -263,6 +278,22 @@ mod tests {
         let entries = read_entries(temp.path()).unwrap();
         let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
         assert_eq!(names, vec!["..", "adir", "zdir", "b.txt"]);
+    }
+
+    #[test]
+    fn goes_up_from_a_nested_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let child = temp.path().join("child");
+        fs::create_dir(&child).unwrap();
+        let mut browser = Browser::new(child.clone(), "uidl".to_string(), 0, "a.bin".to_string());
+        assert_eq!(browser.dir, child);
+        assert_eq!(Browser::entry_label(&browser.entries[0]), "..（上一级）");
+        assert!(browser.go_up());
+        assert_eq!(browser.dir, temp.path());
+
+        browser.selected = 0;
+        browser.enter();
+        assert_eq!(browser.dir, temp.path().parent().unwrap());
     }
 
     #[test]
