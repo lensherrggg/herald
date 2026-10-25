@@ -20,7 +20,7 @@ use crate::sync::{self, EmbeddingJob};
 
 pub const DEMO_ACCOUNT: &str = "demo";
 pub const SAMPLE_MESSAGES: usize = 25;
-pub const MAX_SAMPLE_MESSAGES: usize = 28;
+pub const MAX_SAMPLE_MESSAGES: usize = 29;
 
 /// Keeps the embedded POP3 server and the temporary data directory alive for
 /// as long as the owning [`crate::Herald`] lives.
@@ -541,14 +541,41 @@ fn curated_messages() -> Vec<MockMessage> {
         ),
     ));
 
+    let recipients: Vec<String> = (1..=40)
+        .map(|index| format!("User {index:02} <user{index:02}@example.com>"))
+        .collect();
+    let mut long_body = String::new();
+    for index in 1..=80 {
+        long_body.push_str(&format!(
+            "第 {index:02} 段：{}这是用于验证超长正文折行、滚动与截断提示的样例段落。\r\n\r\n",
+            "中文长文本测试。".repeat(20)
+        ));
+    }
+    long_body.push_str(&format!(
+        "无空格长串（用于验证折行）：{}\r\n",
+        "ABCDEFGHIJ".repeat(120)
+    ));
+    messages.push(MockMessage::new(
+        "demo-13",
+        Mail::new(
+            "demo-13",
+            "批量通知 <bulk@example.com>",
+            recipients.join(", "),
+            subject("超长内容测试：40 个收件人与长正文"),
+            "Sat, 14 Sep 2024 10:30:00 +0800",
+        )
+        .cc("Cc User 01 <cc1@example.com>, Cc User 02 <cc2@example.com>")
+        .text("text/plain; charset=utf-8", "8bit", &long_body),
+    ));
+
     messages
 }
 
 struct Mail {
     uidl: String,
-    from: &'static str,
-    to: &'static str,
-    cc: Option<&'static str>,
+    from: String,
+    to: String,
+    cc: Option<String>,
     subject: Option<Vec<u8>>,
     date: String,
 }
@@ -556,29 +583,29 @@ struct Mail {
 impl Mail {
     fn new(
         uidl: &str,
-        from: &'static str,
-        to: &'static str,
+        from: impl Into<String>,
+        to: impl Into<String>,
         subject: Option<Vec<u8>>,
         date: impl Into<String>,
     ) -> Self {
         Self {
             uidl: uidl.to_string(),
-            from,
-            to,
+            from: from.into(),
+            to: to.into(),
             cc: None,
             subject,
             date: date.into(),
         }
     }
 
-    fn cc(mut self, cc: &'static str) -> Self {
-        self.cc = Some(cc);
+    fn cc(mut self, cc: impl Into<String>) -> Self {
+        self.cc = Some(cc.into());
         self
     }
 
     fn headers(&self) -> Vec<u8> {
         let mut out = format!("From: {}\r\nTo: {}\r\n", self.from, self.to).into_bytes();
-        if let Some(cc) = self.cc {
+        if let Some(cc) = &self.cc {
             out.extend_from_slice(format!("Cc: {cc}\r\n").as_bytes());
         }
         if let Some(subject) = &self.subject {
@@ -792,4 +819,27 @@ fn quoted_printable(text: &str) -> String {
         column += token.len();
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sample_includes_long_detail_case() {
+        let messages = sample_messages(SAMPLE_MESSAGES);
+        assert_eq!(messages.len(), SAMPLE_MESSAGES);
+        let raw = &messages
+            .iter()
+            .find(|message| message.uidl == "demo-13")
+            .expect("demo-13")
+            .raw;
+        let parsed = crate::parse::parse_message(raw, "demo-13", 0, false).expect("parse");
+        assert_eq!(parsed.header.to.len(), 40);
+        assert!(parsed.header.to[39].contains("user40@example.com"));
+        assert_eq!(parsed.header.cc.len(), 2);
+        let body = parsed.body_text.expect("body");
+        assert!(body.len() > 32 * 1024, "body is {} bytes", body.len());
+        assert!(body.contains(&"ABCDEFGHIJ".repeat(120)));
+    }
 }

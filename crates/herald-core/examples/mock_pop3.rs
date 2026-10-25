@@ -18,7 +18,7 @@ const USAGE: &str = "\
 
   --dir <path>        生成 herald.toml 的目录（默认 ./herald-demo）
   --port <port>       POP3 端口，0 表示自动分配（默认 0）
-  --messages <n>      样例邮件数量，1-28（默认 25）
+  --messages <n>      样例邮件数量，1-29（默认 25）
   --username <name>   POP3 用户名（默认 test）
   --password <pass>   POP3 密码（默认 secret）
   --no-top            模拟不支持 TOP 的服务器

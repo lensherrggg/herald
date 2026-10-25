@@ -254,7 +254,7 @@ demo = true
 
 每次启动都会重新同步并重建索引；25 封邮件在本地 CPU 上通常一两秒内完成。模型未下载时不做 embedding，关键词搜索照常可用，混合检索会自动退化为关键词并在状态栏提示。
 
-默认 25 封样例邮件（含分页）。内容覆盖：纯文本、HTML、multipart/alternative、UTF-8/GBK/BIG5、8bit/base64/quoted-printable、无主题、空正文、折叠长主题，以及 PDF/文本/二进制/内嵌图片附件。最新一封“本周项目进度汇报”带 `说明.txt`、`data.bin` 和内嵌 `logo.png`；“电子发票（仅附件）”只有 `发票.pdf`。可搜索“对账”或“评审”，或在 TUI 里选中邮件按 `e` 试导出。
+默认 25 封样例邮件（含分页）。内容覆盖：纯文本、HTML、multipart/alternative、UTF-8/GBK/BIG5、8bit/base64/quoted-printable、无主题、空正文、折叠长主题，以及 PDF/文本/二进制/内嵌图片附件。最新一封“超长内容测试：40 个收件人与长正文”专用于验证详情换行、收件人折叠和正文截断（40 个收件人、正文约 40KB）；“本周项目进度汇报”带 `说明.txt`、`data.bin` 和内嵌 `logo.png`；“电子发票（仅附件）”只有 `发票.pdf`。可搜索“对账”或“评审”，或在 TUI 里选中邮件按 `e` 试导出。
 
 需要固定端口、自定义账号或调整样例数量时，仍可单独运行 mock 服务（终端 A 启动、终端 B 使用生成的配置，语义索引可跨进程保留）：
 
@@ -262,7 +262,7 @@ demo = true
 cargo run -p herald-core --features test-support --example mock_pop3 -- --dir D:/herald-demo
 ```
 
-可选参数：`--messages <1-28>`、`--port <port>`（默认自动分配）、`--no-top` 模拟不支持 TOP 的服务器。
+可选参数：`--messages <1-29>`、`--port <port>`（默认自动分配）、`--no-top` 模拟不支持 TOP 的服务器。
 
 ### 4.5 MCP
 
