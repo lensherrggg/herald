@@ -119,7 +119,9 @@ pub fn configure(config: &mut Config) -> Result<DemoSession> {
     }];
     config.default_account = Some(DEMO_ACCOUNT.to_string());
     config.database = Some(path_text(&data_dir.join("herald.db")));
-    config.attachments.export_dir = Some(path_text(&exports));
+    if config.attachments.export_dir.is_none() {
+        config.attachments.export_dir = Some(path_text(&exports));
+    }
     Ok(session)
 }
 

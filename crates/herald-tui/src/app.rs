@@ -657,7 +657,7 @@ impl App {
         self.browser = Some(Browser::new(start, uidl, index, name));
         self.mode = Mode::Browser;
         self.status = StatusMessage::info(
-            "↑↓ 选择目录 · Enter 进入 · 退格/← 上一级 · d 存入当前目录 · f 改名",
+            "↑↓ 选择 · Enter 进入 · 退格/← 上一级 · / 筛选 · d 存入当前目录 · f 改名",
         );
     }
 
@@ -1014,6 +1014,53 @@ impl App {
             self.mode = Mode::Browse;
             return;
         };
+        if browser.filtering {
+            match key.code {
+                KeyCode::Esc => {
+                    browser.clear_filter();
+                    browser.apply_filter();
+                }
+                KeyCode::Enter => {
+                    if let Some(target) = browser.filter_jump_target() {
+                        browser.dir = target;
+                        browser.selected = 0;
+                        browser.note = None;
+                        browser.clear_filter();
+                        browser.refresh();
+                    } else {
+                        browser.filtering = false;
+                    }
+                }
+                KeyCode::Down => browser.move_by(1),
+                KeyCode::Up => browser.move_by(-1),
+                KeyCode::PageDown => browser.move_by(10),
+                KeyCode::PageUp => browser.move_by(-10),
+                KeyCode::Left => {
+                    browser.filter_cursor =
+                        text_input::prev_cursor(&browser.filter, browser.filter_cursor);
+                }
+                KeyCode::Right => {
+                    browser.filter_cursor =
+                        text_input::next_cursor(&browser.filter, browser.filter_cursor);
+                }
+                KeyCode::Home => browser.filter_cursor = 0,
+                KeyCode::End => browser.filter_cursor = browser.filter.len(),
+                KeyCode::Backspace => {
+                    text_input::backspace(&mut browser.filter, &mut browser.filter_cursor);
+                    browser.apply_filter();
+                }
+                KeyCode::Delete => {
+                    text_input::delete(&mut browser.filter, &mut browser.filter_cursor);
+                    browser.apply_filter();
+                }
+                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    text_input::insert_char(&mut browser.filter, &mut browser.filter_cursor, ch);
+                    browser.apply_filter();
+                }
+                _ => {}
+            }
+            return;
+        }
         if browser.filename_focus {
             match key.code {
                 KeyCode::Enter => self.export_to_filename(),
@@ -1046,9 +1093,22 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => {
+            KeyCode::Esc => {
+                if browser.filter.is_empty() {
+                    self.browser = None;
+                    self.mode = Mode::Browse;
+                } else {
+                    browser.clear_filter();
+                    browser.apply_filter();
+                }
+            }
+            KeyCode::Char('q') => {
                 self.browser = None;
                 self.mode = Mode::Browse;
+            }
+            KeyCode::Char('/') => {
+                browser.filtering = true;
+                browser.filter_cursor = browser.filter.len();
             }
             KeyCode::Down | KeyCode::Char('j') => browser.move_by(1),
             KeyCode::Up | KeyCode::Char('k') => browser.move_by(-1),

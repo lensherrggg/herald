@@ -87,7 +87,7 @@ PathLayout::resolve(--config?)
 然后：
 
 1. `Config::load` 读取并校验 TOML；`demo = true` 时跳过账户校验（账户会被覆盖）。
-2. `demo` 分支：在后台线程启动 mock POP3（25 封样例邮件），把账户、`database`、附件导出目录改写到系统临时目录。
+2. `demo` 分支：在后台线程启动 mock POP3（25 封样例邮件），把账户、`database` 改写到系统临时目录；`attachments.export_dir` 仅在未配置时改写到临时目录，已配置则保留。
 3. `PathLayout::complete` 得出 `database_path`、`models_dir`、`tokenizer_dir`：
    - `database` 相对路径按**配置文件目录**解析；
    - `semantic.model_path` 同样相对配置文件目录，缺省为 `models/<model_name>`；
@@ -342,6 +342,7 @@ App
 
 - 单个附件直接进入浏览器；多个附件先弹选择列表。
 - 内置浏览器只依赖文件系统，不调用任何 GUI 选择器；`↑↓` 选择、`Enter` 进入目录、`退格`/`←`/`h` 返回上一级（首行 `..（上一级）` 同样可进入），`d` 保存到当前目录。Windows 盘符根目录下通过 `GetLogicalDrives` 列出其他盘符，选中 `Enter` 切换。
+- `/` 打开筛选框，按名称做大小写不敏感的子串过滤；查询含路径分隔符（Unix `/`，Windows `/` 或 `\`）时改为匹配完整路径。输入存在的绝对路径后 `Enter` 直接跳到该目录（`filter_jump_target`），因此 `/usr/local` 与 `C:\Tools` 都按各自平台的路径语义处理。切换目录时清空筛选，`..` 行始终保留。
 - `d`：当前目录 + 安全化原名；核心层 `unique_target` 处理重名。
 - `f`：编辑文件名，`Enter` 保存完整路径；已存在时拒绝覆盖并在浏览器内提示。
 - `n`：新建目录；非法名称/路径分隔符直接拒绝。

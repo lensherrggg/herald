@@ -17,6 +17,20 @@ fn layout(dir: &Path) -> PathLayout {
 }
 
 #[test]
+fn demo_respects_configured_export_dir() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let exports = dir.path().join("my-exports");
+    std::fs::create_dir_all(&exports).unwrap();
+    let config = Config::from_toml(&format!(
+        "demo = true\n\n[attachments]\nexport_dir = \"{}\"\n",
+        exports.to_string_lossy().replace('\\', "/")
+    ))
+    .expect("demo config");
+    let herald = Herald::open_with_config(config, layout(dir.path())).expect("open demo herald");
+    assert_eq!(herald.export_base_dir(), exports);
+}
+
+#[test]
 fn demo_flag_syncs_mock_mail_and_resets_on_exit() {
     // Only the flag is required: no accounts, no database path.
     let config = Config::from_toml("demo = true\n").expect("demo config");

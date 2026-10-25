@@ -248,7 +248,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             Mode::Accounts => "↑↓ 选择 · Enter 切换 · Esc 取消",
             Mode::Attachments => "↑↓ 选择附件 · Enter 导出 · Esc 取消",
             Mode::Browser => {
-                "↑↓ 选择 · Enter 进入 · 退格 上级 · d 保存 · f 改名 · n 新建 · Esc 取消"
+                "↑↓ 选择 · Enter 进入 · 退格 上级 · / 筛选 · d 保存 · f 改名 · n 新建 · Esc 取消"
             }
             Mode::Raw => {
                 let editing = app.raw_search.as_ref().is_some_and(|search| search.editing);
@@ -401,12 +401,16 @@ fn draw_browser(frame: &mut Frame, app: &App) {
     );
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let chunks = Layout::vertical([
-        Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .split(inner);
+    let show_filter = browser.filtering || !browser.filter.is_empty();
+    let mut heights = vec![Constraint::Min(1)];
+    if show_filter {
+        heights.push(Constraint::Length(1));
+    }
+    heights.push(Constraint::Length(1));
+    heights.push(Constraint::Length(1));
+    let chunks = Layout::vertical(heights).split(inner);
+    let filename_chunk = if show_filter { 2 } else { 1 };
+    let note_chunk = filename_chunk + 1;
 
     let items: Vec<ListItem> = browser
         .entries
@@ -429,6 +433,9 @@ fn draw_browser(frame: &mut Frame, app: &App) {
         .highlight_style(selected(app));
     let mut state = ListState::default().with_selected(Some(browser.selected));
     frame.render_stateful_widget(list, chunks[0], &mut state);
+    if show_filter {
+        draw_browser_filter(frame, app, browser, chunks[1]);
+    }
 
     let filename_style = if browser.filename_focus {
         accent(app)
@@ -452,10 +459,10 @@ fn draw_browser(frame: &mut Frame, app: &App) {
     }
     filename_spans.push(Span::styled(after.to_string(), filename_style));
     let filename = Line::from(filename_spans);
-    frame.render_widget(Paragraph::new(filename), chunks[1]);
+    frame.render_widget(Paragraph::new(filename), chunks[filename_chunk]);
 
     let note = browser.note.clone().unwrap_or_else(|| {
-        "Enter 进入目录/选文件 · 退格 上一级 · d 存入当前目录 · f 改名".to_string()
+        "Enter 进入/选文件 · 退格 上级 · / 筛选 · d 存入当前目录 · f 改名".to_string()
     });
     frame.render_widget(
         Paragraph::new(Span::styled(
@@ -466,8 +473,36 @@ fn draw_browser(frame: &mut Frame, app: &App) {
                 Style::new().add_modifier(Modifier::DIM)
             },
         )),
-        chunks[2],
+        chunks[note_chunk],
     );
+}
+
+fn draw_browser_filter(frame: &mut Frame, app: &App, browser: &Browser, area: Rect) {
+    let (before, after) = crate::text_input::split_at(&browser.filter, browser.filter_cursor);
+    let count = browser.filter_count();
+    let hint = if !browser.filtering {
+        "/ 编辑 · Esc 清除"
+    } else if browser.filter_jump_target().is_some() {
+        "Enter 跳转 · Esc 清除"
+    } else {
+        "Enter 确定 · Esc 清除"
+    };
+    let mut spans = vec![Span::styled(
+        " 筛选: ",
+        Style::new().add_modifier(Modifier::BOLD),
+    )];
+    if browser.filtering {
+        spans.push(Span::raw(before.to_string()));
+        spans.push(Span::styled("█", accent(app)));
+        spans.push(Span::raw(after.to_string()));
+    } else {
+        spans.push(Span::raw(browser.filter.clone()));
+    }
+    spans.push(Span::styled(
+        format!("  {count} 项  {hint}"),
+        Style::new().add_modifier(Modifier::DIM),
+    ));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_raw(frame: &mut Frame, app: &App) {
@@ -634,7 +669,7 @@ fn draw_help(frame: &mut Frame, app: &App) {
         Line::from("Tab          切换列表/详情焦点"),
         Line::from("r            查看原始邮件（/ 查找，n/N 跳转）"),
         Line::from("e            导出附件（内置文件浏览器）"),
-        Line::from("  浏览器      ↑↓ 选择 · Enter 进入 · 退格 上级 · d 保存 · f 改名"),
+        Line::from("  浏览器      ↑↓ 选择 · Enter 进入 · 退格 上级 · / 筛选 · d 保存"),
         Line::from("Esc          清除搜索 / 返回"),
         Line::from("q / Ctrl+C   退出"),
         Line::from(""),

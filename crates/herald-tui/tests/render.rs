@@ -908,3 +908,65 @@ fn export_browser_navigates_to_the_parent_directory() {
     app.handle_key(key(KeyCode::Enter));
     assert_eq!(app.browser.as_ref().unwrap().dir, dir.path());
 }
+
+#[test]
+fn export_browser_filters_and_jumps_to_absolute_paths() {
+    let (mut app, dir) = synced_app(20, vec![message_one()]);
+    let exports = dir.path().join("exports");
+    std::fs::create_dir_all(exports.join("alpha")).unwrap();
+    std::fs::create_dir_all(exports.join("beta")).unwrap();
+    app.browser = Some(Browser::new(
+        exports.clone(),
+        "m1".to_string(),
+        0,
+        "a.bin".to_string(),
+    ));
+    app.mode = herald_tui::app::Mode::Browser;
+
+    app.handle_key(key(KeyCode::Char('/')));
+    for ch in "be".chars() {
+        app.handle_key(key(KeyCode::Char(ch)));
+    }
+    let browser = app.browser.as_ref().unwrap();
+    assert!(browser.filtering);
+    assert_eq!(browser.filter, "be");
+    let names: Vec<_> = browser
+        .entries
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["..", "beta"]);
+    let screen = compact(&render(&app, 100, 40));
+    assert!(screen.contains("筛选:be"), "{screen}");
+    assert!(screen.contains("1项"), "{screen}");
+    assert!(!screen.contains("alpha"), "{screen}");
+
+    app.handle_key(key(KeyCode::Enter));
+    assert!(!app.browser.as_ref().unwrap().filtering);
+    assert_eq!(app.browser.as_ref().unwrap().filter, "be");
+    app.handle_key(key(KeyCode::Down));
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.browser.as_ref().unwrap().dir, exports.join("beta"));
+    assert!(app.browser.as_ref().unwrap().filter.is_empty());
+
+    app.handle_key(key(KeyCode::Char('/')));
+    for ch in "zz".chars() {
+        app.handle_key(key(KeyCode::Char(ch)));
+    }
+    app.handle_key(key(KeyCode::Esc));
+    let browser = app.browser.as_ref().expect("browser stays open");
+    assert!(!browser.filtering);
+    assert!(browser.filter.is_empty());
+
+    let target = exports.join("alpha");
+    app.handle_key(key(KeyCode::Char('/')));
+    for ch in target.to_string_lossy().chars() {
+        app.handle_key(key(KeyCode::Char(ch)));
+    }
+    assert!(app.browser.as_ref().unwrap().filter_jump_target().is_some());
+    let screen = compact(&render(&app, 100, 40));
+    assert!(screen.contains("Enter跳转"), "{screen}");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.browser.as_ref().unwrap().dir, target);
+    assert!(app.browser.as_ref().unwrap().filter.is_empty());
+}

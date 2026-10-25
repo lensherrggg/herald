@@ -11,8 +11,12 @@ pub struct BrowserEntry {
 #[derive(Debug)]
 pub struct Browser {
     pub dir: PathBuf,
+    all_entries: Vec<BrowserEntry>,
     pub entries: Vec<BrowserEntry>,
     pub selected: usize,
+    pub filter: String,
+    pub filter_cursor: usize,
+    pub filtering: bool,
     pub filename: String,
     pub filename_cursor: usize,
     pub filename_focus: bool,
@@ -32,8 +36,12 @@ impl Browser {
         let (dir, note) = resolve_start(start);
         let mut browser = Self {
             dir,
+            all_entries: Vec::new(),
             entries: Vec::new(),
             selected: 0,
+            filter: String::new(),
+            filter_cursor: 0,
+            filtering: false,
             filename: original_name.clone(),
             filename_cursor: original_name.len(),
             filename_focus: false,
@@ -48,10 +56,7 @@ impl Browser {
 
     pub fn refresh(&mut self) {
         match read_entries(&self.dir) {
-            Ok(entries) => {
-                self.entries = entries;
-                self.selected = self.selected.min(self.entries.len().saturating_sub(1));
-            }
+            Ok(entries) => self.all_entries = entries,
             Err(err) => {
                 let fallback = dirs_home().unwrap_or_else(|| PathBuf::from("."));
                 if fallback != self.dir {
@@ -61,15 +66,71 @@ impl Browser {
                         fallback.display()
                     ));
                     self.dir = fallback;
-                    self.entries = read_entries(&self.dir).unwrap_or_default();
+                    self.all_entries = read_entries(&self.dir).unwrap_or_default();
                     self.selected = 0;
                 } else {
-                    self.entries.clear();
+                    self.all_entries.clear();
                     self.selected = 0;
                     self.note = Some(format!("无法读取目录：{err}"));
                 }
             }
         }
+        self.apply_filter();
+    }
+
+    /// Rebuild the visible list from the current filter. The parent row is
+    /// always visible so navigation never traps the user. Queries containing
+    /// a path separator match the absolute path instead of just the name.
+    pub fn apply_filter(&mut self) {
+        let previous = self
+            .entries
+            .get(self.selected)
+            .map(|entry| entry.path.clone());
+        let query = self.filter.to_lowercase();
+        let by_path = query.contains('/') || (cfg!(windows) && query.contains('\\'));
+        self.entries = self
+            .all_entries
+            .iter()
+            .filter(|entry| {
+                entry.name == ".."
+                    || query.is_empty()
+                    || if by_path {
+                        entry.path.to_string_lossy().to_lowercase().contains(&query)
+                    } else {
+                        entry.name.to_lowercase().contains(&query)
+                    }
+            })
+            .cloned()
+            .collect();
+        self.selected = previous
+            .and_then(|path| self.entries.iter().position(|entry| entry.path == path))
+            .unwrap_or(0)
+            .min(self.entries.len().saturating_sub(1));
+    }
+
+    /// An existing absolute directory typed into the filter box. Enter jumps
+    /// straight there, which makes `/usr/local` (macOS/Linux) and `C:\Tools`
+    /// (Windows) behave like native paths.
+    pub fn filter_jump_target(&self) -> Option<PathBuf> {
+        let query = self.filter.trim();
+        if query.is_empty() {
+            return None;
+        }
+        let path = PathBuf::from(query);
+        (path.is_absolute() && path.is_dir()).then_some(path)
+    }
+
+    pub fn clear_filter(&mut self) {
+        self.filter.clear();
+        self.filter_cursor = 0;
+        self.filtering = false;
+    }
+
+    pub fn filter_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.name != "..")
+            .count()
     }
 
     pub fn move_by(&mut self, delta: isize) {
@@ -92,6 +153,7 @@ impl Browser {
             self.dir = entry.path;
             self.selected = 0;
             self.note = None;
+            self.clear_filter();
             self.refresh();
         } else {
             self.filename = entry.name;
@@ -112,6 +174,7 @@ impl Browser {
         self.dir = parent;
         self.selected = 0;
         self.note = None;
+        self.clear_filter();
         self.refresh();
         true
     }
@@ -147,6 +210,7 @@ impl Browser {
         }
         let path = self.dir.join(name);
         fs::create_dir(&path)?;
+        self.clear_filter();
         self.refresh();
         if let Some(index) = self.entries.iter().position(|entry| entry.path == path) {
             self.selected = index;
@@ -340,6 +404,48 @@ mod tests {
         assert_eq!(entries[0].name, "C:\\");
         assert!(entries[0].is_dir);
         assert_eq!(Browser::entry_label(&entries[0]), "C:\\");
+    }
+
+    #[test]
+    fn filters_by_name_and_absolute_path() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("alpha")).unwrap();
+        fs::create_dir(temp.path().join("beta")).unwrap();
+        fs::write(temp.path().join("notes.txt"), b"x").unwrap();
+        let mut browser = Browser::new(
+            temp.path().to_path_buf(),
+            "uidl".to_string(),
+            0,
+            "a.bin".to_string(),
+        );
+
+        browser.filter = "be".to_string();
+        browser.apply_filter();
+        let names: Vec<_> = browser
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["..", "beta"]);
+        assert_eq!(browser.filter_count(), 1);
+
+        browser.filter = "notes".to_string();
+        browser.apply_filter();
+        assert!(browser
+            .entries
+            .iter()
+            .any(|entry| entry.name == "notes.txt"));
+
+        let target = temp.path().join("alpha");
+        browser.filter = target.to_string_lossy().to_string();
+        browser.apply_filter();
+        let names: Vec<_> = browser
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["..", "alpha"]);
+        assert_eq!(browser.filter_jump_target(), Some(target));
     }
 
     #[test]

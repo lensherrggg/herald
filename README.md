@@ -113,7 +113,7 @@ default_limit = 50
 auto_body_max_size = 0           # 0 = 同步时缓存全部新邮件正文
 
 [attachments]
-export_dir = "~/Downloads/herald"
+export_dir = "~/Downloads/herald"  # 导出浏览器默认起始目录；目录不存在时回退到上次导出目录 → Downloads → 主目录
 max_attachment_size_bytes = 52428800
 
 [semantic]
@@ -228,6 +228,7 @@ TUI 已并入 `herald`，不再单独产出 `herald-tui` 可执行文件。
 
 - 目录列表选择保存目录，`d` 用附件原名保存到当前目录（重名自动加序号，不覆盖）；
 - `Enter` 进入选中目录或选中文件；`退格` / `←` / `h` 返回上一级，列表首行的 `..（上一级）` 也可用 `Enter` 进入；
+- `/` 打开筛选框，边输入边按名称过滤（含文件）；查询带路径分隔符时按完整路径匹配，输入存在的绝对路径（macOS/Linux 如 `/usr/local`，Windows 如 `C:\Tools`）后 `Enter` 直接跳转；
 - 到盘符根目录（如 `D:\`）后，列表会列出其他可用盘符（如 `C:\`），选中后 `Enter` 即可切换；
 - `f` 编辑文件名后 `Enter` 保存为指定路径；
 - `n` 在当前目录新建子目录；
@@ -249,7 +250,7 @@ demo = true
 ./target/debug/herald.exe --config D:/herald-demo.toml search 评审 --field subject
 ```
 
-`demo = true` 时配置文件里的 `[[accounts]]` 会被忽略，因此可以只写这一行；`database`、`attachments.export_dir` 也会被临时目录覆盖。语义检索仍按 `[semantic]` 的配置读取模型目录；模型文件存在时，首次自动同步会顺带写入向量，语义/混合检索可直接使用。首次使用前需下载模型（约 95 MB，可重复执行；这里走 `hf-mirror.com`，能直连 HuggingFace 时去掉 `--mirror`）：
+`demo = true` 时配置文件里的 `[[accounts]]` 会被忽略，因此可以只写这一行；`database` 会被临时数据库覆盖，`attachments.export_dir` 若已配置则保留（便于导出到固定目录），未配置时默认指到临时目录。语义检索仍按 `[semantic]` 的配置读取模型目录；模型文件存在时，首次自动同步会顺带写入向量，语义/混合检索可直接使用。首次使用前需下载模型（约 95 MB，可重复执行；这里走 `hf-mirror.com`，能直连 HuggingFace 时去掉 `--mirror`）：
 
 ```bash
 ./target/debug/herald.exe --config D:/herald-demo.toml models download --mirror https://hf-mirror.com
