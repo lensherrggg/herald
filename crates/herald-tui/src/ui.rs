@@ -258,8 +258,10 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
                     "输入关键字 · Enter 下一个 · Esc 完成"
                 } else if matched {
                     "n/N 上下匹配 · / 重新查找 · Esc 返回"
+                } else if area.width < 70 {
+                    "/ 查找 · ↑↓ 行 · PgDn 翻页 · Esc 返回"
                 } else {
-                    "/ 查找 · ↑↓ PgUp/PgDn 滚动 · g/G 首尾 · Esc 返回"
+                    "/ 查找 · ↑↓ 行 · 空格/PgDn 翻页 · g/G 首尾 · Esc 返回"
                 }
             }
             Mode::Help => "Esc 返回",
@@ -475,6 +477,8 @@ fn draw_raw(frame: &mut Frame, app: &App) {
     };
     let inner_width = content_area.width.saturating_sub(2).max(1);
     app.raw_width.set(inner_width);
+    app.raw_height
+        .set(content_area.height.saturating_sub(2).max(1));
     let title = if app.raw_truncated {
         " 原始邮件（已截断）· Esc 返回 "
     } else {

@@ -157,6 +157,8 @@ pub struct App {
     pub raw_search: Option<RawSearch>,
     /// Inner width of the last raw-view render, used to locate matches.
     pub raw_width: Cell<u16>,
+    /// Visible text height of the last raw-view render, used for paging.
+    pub raw_height: Cell<u16>,
     pub mode: Mode,
     pub status: StatusMessage,
     pub focus: Focus,
@@ -196,6 +198,7 @@ impl App {
             raw_truncated: false,
             raw_search: None,
             raw_width: Cell::new(80),
+            raw_height: Cell::new(20),
             mode: Mode::Browse,
             status: StatusMessage::default(),
             focus: Focus::List,
@@ -1003,13 +1006,17 @@ impl App {
             }
             KeyCode::Up | KeyCode::Char('k') => self.raw_scroll = self.raw_scroll.saturating_sub(1),
             KeyCode::PageDown | KeyCode::Char(' ') => {
-                self.raw_scroll = self.raw_scroll.saturating_add(15)
+                self.raw_scroll = self.raw_scroll.saturating_add(self.raw_page())
             }
-            KeyCode::PageUp => self.raw_scroll = self.raw_scroll.saturating_sub(15),
+            KeyCode::PageUp => self.raw_scroll = self.raw_scroll.saturating_sub(self.raw_page()),
             KeyCode::Char('g') => self.raw_scroll = 0,
             KeyCode::Char('G') => self.raw_scroll = u16::MAX,
             _ => {}
         }
+    }
+
+    fn raw_page(&self) -> u16 {
+        self.raw_height.get().max(1)
     }
 
     fn handle_raw_search_key(&mut self, key: KeyEvent) {

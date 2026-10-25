@@ -725,3 +725,26 @@ fn detail_preview_wraps_long_cjk_body_without_orphaning_labels() {
         "detail row wider than the panel:\n{screen}"
     );
 }
+
+#[test]
+fn raw_view_pages_by_the_visible_height() {
+    let (mut app, _dir) = synced_app(20, vec![message_one()]);
+    let text: Vec<String> = (0..200).map(|index| format!("line {index}")).collect();
+    app.raw = Some(text.join("\n"));
+    app.raw_truncated = false;
+    app.mode = herald_tui::app::Mode::Raw;
+    let _ = render_rows(&app, 80, 30);
+
+    let page = app.raw_height.get();
+    assert!(page > 15, "page should follow the viewport, got {page}");
+    app.handle_key(key(KeyCode::PageDown));
+    assert_eq!(app.raw_scroll, page);
+    app.handle_key(key(KeyCode::Char(' ')));
+    assert_eq!(app.raw_scroll, page * 2);
+    app.handle_key(key(KeyCode::PageUp));
+    assert_eq!(app.raw_scroll, page);
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(app.raw_scroll, page + 1);
+    app.handle_key(key(KeyCode::Char('g')));
+    assert_eq!(app.raw_scroll, 0);
+}
