@@ -245,7 +245,20 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             Mode::Accounts => "↑↓ 选择 · Enter 切换 · Esc 取消",
             Mode::Attachments => "↑↓ 选择附件 · Enter 导出 · Esc 取消",
             Mode::Browser => "↑↓ 选择 · Enter 进入 · d 保存 · f 改名 · n 新建 · Esc 取消",
-            Mode::Raw => "↑↓ · PgUp/PgDn 滚动 · g/G 首尾 · Esc 返回",
+            Mode::Raw => {
+                let editing = app.raw_search.as_ref().is_some_and(|search| search.editing);
+                let matched = app
+                    .raw_search
+                    .as_ref()
+                    .is_some_and(|search| !search.matches.is_empty());
+                if editing {
+                    "输入关键字 · Enter 下一个 · Esc 完成"
+                } else if matched {
+                    "n/N 上下匹配 · / 重新查找 · Esc 返回"
+                } else {
+                    "/ 查找 · ↑↓ PgUp/PgDn 滚动 · g/G 首尾 · Esc 返回"
+                }
+            }
             Mode::Help => "Esc 返回",
         };
         let hint_area = Rect {
@@ -450,16 +463,119 @@ fn draw_raw(frame: &mut Frame, app: &App) {
     }
     let raw_area = Rect { height, ..area };
     frame.render_widget(Clear, raw_area);
+    let editing = app.raw_search.as_ref().is_some_and(|search| search.editing);
+    let (content_area, input_area) = if editing && height >= 3 {
+        let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(raw_area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (raw_area, None)
+    };
+    app.raw_width
+        .set(content_area.width.saturating_sub(2).max(1));
     let title = if app.raw_truncated {
         " 原始邮件（已截断）· Esc 返回 "
     } else {
         " 原始邮件 · Esc 返回 "
     };
-    let paragraph = Paragraph::new(app.raw.as_deref().unwrap_or(""))
+    let paragraph = Paragraph::new(raw_text(app))
         .block(panel(title, true, app))
         .wrap(Wrap { trim: false })
         .scroll((app.raw_scroll, 0));
-    frame.render_widget(paragraph, raw_area);
+    frame.render_widget(paragraph, content_area);
+    if let Some(area) = input_area {
+        draw_raw_search(frame, app, area);
+    }
+}
+
+fn raw_text(app: &App) -> Text<'static> {
+    let raw = app.raw.as_deref().unwrap_or("");
+    let Some(search) = &app.raw_search else {
+        return Text::from(raw.to_string());
+    };
+    if search.matches.is_empty() {
+        return Text::from(raw.to_string());
+    }
+    let mut lines = Vec::new();
+    let mut cursor = 0usize;
+    for (line_index, content) in raw.lines().enumerate() {
+        while cursor < search.matches.len() && search.matches[cursor].line < line_index {
+            cursor += 1;
+        }
+        let first_match = cursor;
+        while cursor < search.matches.len() && search.matches[cursor].line == line_index {
+            cursor += 1;
+        }
+        let line_matches = &search.matches[first_match..cursor];
+        if line_matches.is_empty() {
+            lines.push(Line::from(content.to_string()));
+            continue;
+        }
+        let mut spans = Vec::new();
+        let mut position = 0usize;
+        for (offset, matched) in line_matches.iter().enumerate() {
+            if matched.start > position {
+                spans.push(Span::raw(content[position..matched.start].to_string()));
+            }
+            spans.push(Span::styled(
+                content[matched.start..matched.end].to_string(),
+                raw_match_style(app, first_match + offset == search.current),
+            ));
+            position = matched.end;
+        }
+        if position < content.len() {
+            spans.push(Span::raw(content[position..].to_string()));
+        }
+        lines.push(Line::from(spans));
+    }
+    Text::from(lines)
+}
+
+fn raw_match_style(app: &App, current: bool) -> Style {
+    if app.color {
+        if current {
+            Style::new()
+                .bg(Color::Yellow)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().bg(Color::Blue).fg(Color::White)
+        }
+    } else if current {
+        Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+    } else {
+        Style::new().add_modifier(Modifier::UNDERLINED)
+    }
+}
+
+fn draw_raw_search(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(search) = &app.raw_search else {
+        return;
+    };
+    let count = if search.matches.is_empty() {
+        "0/0".to_string()
+    } else {
+        format!("{}/{}", search.current + 1, search.matches.len())
+    };
+    let hint = if search.matches.is_empty() {
+        "输入关键字 · Esc 完成"
+    } else {
+        "Enter 下一个 · Esc 完成"
+    };
+    let line = Line::from(vec![
+        Span::styled(" 查找: ", Style::new().add_modifier(Modifier::BOLD)),
+        Span::raw(search.query.clone()),
+        Span::styled("█", accent(app)),
+        Span::styled(
+            format!("  {count}  {hint}"),
+            Style::new().add_modifier(Modifier::DIM),
+        ),
+    ]);
+    let style = if app.color {
+        Style::new().bg(Color::DarkGray)
+    } else {
+        Style::new().add_modifier(Modifier::REVERSED)
+    };
+    frame.render_widget(Paragraph::new(line).style(style), area);
 }
 
 fn draw_help(frame: &mut Frame, app: &App) {
@@ -483,7 +599,7 @@ fn draw_help(frame: &mut Frame, app: &App) {
         Line::from("Enter        加载邮件详情（并标记已读）"),
         Line::from("u            标记已读 / 未读（仅本地）"),
         Line::from("Tab          切换列表/详情焦点"),
-        Line::from("r            查看原始邮件"),
+        Line::from("r            查看原始邮件（/ 查找，n/N 跳转）"),
         Line::from("e            导出附件（内置文件浏览器）"),
         Line::from("Esc          清除搜索 / 返回"),
         Line::from("q / Ctrl+C   退出"),

@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::path::Path;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -7,6 +8,7 @@ use herald_core::model::{
 };
 use herald_core::paths::ResolvedPaths;
 use herald_core::{Config, Herald};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::DefaultTerminal;
 use tokio::runtime::Runtime;
 
@@ -56,6 +58,21 @@ pub struct SearchState {
     pub query: String,
     pub kind: SearchKind,
     pub field: SearchField,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawMatch {
+    pub line: usize,
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug)]
+pub struct RawSearch {
+    pub query: String,
+    pub matches: Vec<RawMatch>,
+    pub current: usize,
+    pub editing: bool,
 }
 
 impl SearchState {
@@ -129,6 +146,9 @@ pub struct App {
     pub raw: Option<String>,
     pub raw_scroll: u16,
     pub raw_truncated: bool,
+    pub raw_search: Option<RawSearch>,
+    /// Inner width of the last raw-view render, used to locate matches.
+    pub raw_width: Cell<u16>,
     pub mode: Mode,
     pub status: StatusMessage,
     pub focus: Focus,
@@ -166,6 +186,8 @@ impl App {
             raw: None,
             raw_scroll: 0,
             raw_truncated: false,
+            raw_search: None,
+            raw_width: Cell::new(80),
             mode: Mode::Browse,
             status: StatusMessage::default(),
             focus: Focus::List,
@@ -394,6 +416,7 @@ impl App {
                 self.raw = Some(text);
                 self.raw_scroll = 0;
                 self.raw_truncated = truncated;
+                self.raw_search = None;
                 self.mode = Mode::Raw;
                 self.status = StatusMessage::info(if truncated {
                     "原始邮件：超过 256KB，已截断 · Esc 返回"
@@ -949,12 +972,24 @@ impl App {
     }
 
     fn handle_raw_key(&mut self, key: KeyEvent) {
+        if self
+            .raw_search
+            .as_ref()
+            .is_some_and(|search| search.editing)
+        {
+            self.handle_raw_search_key(key);
+            return;
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.mode = Mode::Browse;
                 self.raw = None;
+                self.raw_search = None;
                 self.raw_truncated = false;
             }
+            KeyCode::Char('/') => self.open_raw_search(),
+            KeyCode::Char('n') => self.step_raw_match(true),
+            KeyCode::Char('N') => self.step_raw_match(false),
             KeyCode::Down | KeyCode::Char('j') => {
                 self.raw_scroll = self.raw_scroll.saturating_add(1)
             }
@@ -967,6 +1002,118 @@ impl App {
             KeyCode::Char('G') => self.raw_scroll = u16::MAX,
             _ => {}
         }
+    }
+
+    fn handle_raw_search_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                if let Some(search) = &mut self.raw_search {
+                    search.editing = false;
+                    self.status = if search.matches.is_empty() {
+                        StatusMessage::info("查找已关闭")
+                    } else {
+                        StatusMessage::info(format!(
+                            "查找：{} · {}/{}（n/N 跳转，/ 重新查找）",
+                            search.query,
+                            search.current + 1,
+                            search.matches.len()
+                        ))
+                    };
+                }
+            }
+            KeyCode::Enter => self.step_raw_match(true),
+            KeyCode::Backspace => {
+                if let Some(search) = &mut self.raw_search {
+                    search.query.pop();
+                }
+                self.refresh_raw_search(true);
+            }
+            KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(search) = &mut self.raw_search {
+                    search.query.push(ch);
+                }
+                self.refresh_raw_search(true);
+            }
+            _ => {}
+        }
+    }
+
+    fn open_raw_search(&mut self) {
+        if self.raw.is_none() {
+            return;
+        }
+        self.raw_search = Some(RawSearch {
+            query: String::new(),
+            matches: Vec::new(),
+            current: 0,
+            editing: true,
+        });
+        self.status = StatusMessage::info("查找原文：输入关键字，Enter 下一个，Esc 完成");
+    }
+
+    fn refresh_raw_search(&mut self, jump: bool) {
+        let Some(raw) = self.raw.as_deref() else {
+            return;
+        };
+        let Some(search) = self.raw_search.as_mut() else {
+            return;
+        };
+        search.matches = raw_matches(raw, &search.query);
+        search.current = 0;
+        let query = search.query.clone();
+        if query.is_empty() {
+            self.status = StatusMessage::info("查找原文：输入关键字，Enter 下一个，Esc 完成");
+            return;
+        }
+        if search.matches.is_empty() {
+            self.status = StatusMessage::error(format!("未找到：{query}"));
+            return;
+        }
+        let total = search.matches.len();
+        let first = if jump {
+            Some(search.matches[0].clone())
+        } else {
+            None
+        };
+        if let Some(first) = first {
+            self.scroll_to_raw_match(&first);
+        }
+        self.status =
+            StatusMessage::info(format!("匹配 {total} 处：{query} · Enter 下一个，Esc 完成"));
+    }
+
+    fn step_raw_match(&mut self, forward: bool) {
+        let Some(search) = self.raw_search.as_ref() else {
+            return;
+        };
+        if search.matches.is_empty() {
+            self.status = StatusMessage::error(if search.query.is_empty() {
+                "请先输入要查找的关键字"
+            } else {
+                "没有可跳转的匹配"
+            });
+            return;
+        }
+        let len = search.matches.len();
+        let current = if forward {
+            (search.current + 1) % len
+        } else {
+            (search.current + len - 1) % len
+        };
+        let matched = search.matches[current].clone();
+        let query = search.query.clone();
+        if let Some(search) = self.raw_search.as_mut() {
+            search.current = current;
+        }
+        self.scroll_to_raw_match(&matched);
+        self.status = StatusMessage::info(format!("匹配 {}/{}：{query}", current + 1, len));
+    }
+
+    fn scroll_to_raw_match(&mut self, matched: &RawMatch) {
+        let Some(raw) = self.raw.as_deref() else {
+            return;
+        };
+        self.raw_scroll = raw_match_row(raw, matched, self.raw_width.get().max(1));
     }
 
     pub fn scroll_detail(&mut self, delta: i16) {
@@ -1122,6 +1269,78 @@ fn next_search_kind(kind: SearchKind) -> SearchKind {
     }
 }
 
+/// Find non-overlapping keyword matches line by line. ASCII queries ignore
+/// case so header names and URLs are easy to find.
+pub fn raw_matches(text: &str, query: &str) -> Vec<RawMatch> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let mut matches = Vec::new();
+    for (line, content) in text.lines().enumerate() {
+        let mut from = 0;
+        while from <= content.len() {
+            let Some(start) = find_from(content, from, query) else {
+                break;
+            };
+            let end = start + query.len();
+            matches.push(RawMatch { line, start, end });
+            from = end;
+        }
+    }
+    matches
+}
+
+fn find_from(line: &str, from: usize, query: &str) -> Option<usize> {
+    let haystack = line.get(from..)?;
+    if query.is_ascii() {
+        haystack
+            .as_bytes()
+            .windows(query.len())
+            .position(|window| window.eq_ignore_ascii_case(query.as_bytes()))
+            .map(|offset| from + offset)
+    } else {
+        haystack.find(query).map(|offset| from + offset)
+    }
+}
+
+/// Rendered row (after word wrapping) of a match, used to scroll it into view.
+pub fn raw_match_row(text: &str, matched: &RawMatch, width: u16) -> u16 {
+    let width = width.max(1);
+    let mut row = 0usize;
+    for (line, content) in text.lines().enumerate() {
+        if line == matched.line {
+            let prefix = content.get(..matched.start).unwrap_or("");
+            let rest = content.get(matched.start..).unwrap_or("");
+            row += prefix_rows(prefix, rest, width);
+            break;
+        }
+        row += wrapped_rows(content, width);
+    }
+    row.min(u16::MAX as usize) as u16
+}
+
+/// Rows consumed by `prefix`, walking the same word wrapper as the raw view.
+/// `rest` is the text from the match onward; the whole word it starts with is
+/// taken into account so a word pushed to the next row is located correctly.
+fn prefix_rows(prefix: &str, rest: &str, width: u16) -> usize {
+    let rows = wrapped_rows(prefix, width);
+    if rest.is_empty() {
+        return rows - 1;
+    }
+    let word_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let mut extended = String::with_capacity(prefix.len() + word_end);
+    extended.push_str(prefix);
+    extended.push_str(&rest[..word_end]);
+    rows - 1 + usize::from(wrapped_rows(&extended, width) > rows)
+}
+
+fn wrapped_rows(line: &str, width: u16) -> usize {
+    Paragraph::new(line.to_string())
+        .wrap(Wrap { trim: false })
+        .line_count(width.max(1))
+        .max(1)
+}
+
 fn prepare_raw(bytes: &[u8], limit: usize) -> (String, bool) {
     let truncated = bytes.len() > limit;
     let bytes = if truncated { &bytes[..limit] } else { bytes };
@@ -1254,5 +1473,74 @@ mod tests {
         assert!(truncated);
         assert!(text.starts_with("abc"));
         assert!(text.contains("已截断"));
+    }
+
+    #[test]
+    fn raw_matches_are_line_scoped_and_case_insensitive_for_ascii() {
+        let text = "会议纪要\n下周会议安排\nSubject: Weekly HELLO\nhello again";
+        let found = raw_matches(text, "会议");
+        assert_eq!(found.len(), 2);
+        assert_eq!(
+            found[0],
+            RawMatch {
+                line: 0,
+                start: 0,
+                end: 6
+            }
+        );
+        assert_eq!(
+            found[1],
+            RawMatch {
+                line: 1,
+                start: 6,
+                end: 12
+            }
+        );
+
+        let hello = raw_matches(text, "hello");
+        assert_eq!(hello.len(), 2);
+        assert_eq!((hello[0].line, hello[0].start), (2, 16));
+        assert_eq!((hello[1].line, hello[1].start), (3, 0));
+
+        assert!(raw_matches(text, "").is_empty());
+        assert!(raw_matches(text, "不存在").is_empty());
+    }
+
+    #[test]
+    fn raw_match_row_accounts_for_wrapping_and_earlier_lines() {
+        let long = "A".repeat(100);
+        let text = format!("header\n{long}\ntail");
+        let on_long = RawMatch {
+            line: 1,
+            start: 90,
+            end: 93,
+        };
+        // 100 columns at width 40 leave the 91st character on row 2.
+        assert_eq!(raw_match_row(&text, &on_long, 40), 3);
+        let first_line = RawMatch {
+            line: 0,
+            start: 90,
+            end: 93,
+        };
+        assert_eq!(raw_match_row(&long, &first_line, 40), 2);
+        assert_eq!(raw_match_row(&long, &first_line, 100), 0);
+        assert_eq!(
+            raw_match_row(
+                &long,
+                &RawMatch {
+                    line: 0,
+                    start: 40,
+                    end: 43
+                },
+                40
+            ),
+            1
+        );
+
+        let words = "aaaa bbbb cccc";
+        let at = words.find("cccc").unwrap();
+        let found = raw_matches(words, "cccc");
+        assert_eq!(found[0].start, at);
+        assert_eq!(raw_match_row(words, &found[0], 8), 2);
     }
 }

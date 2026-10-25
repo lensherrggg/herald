@@ -525,3 +525,98 @@ fn wraps_long_addresses_and_body_and_shows_china_time() {
         "long unbroken body tokens must wrap, not truncate:\n{screen}"
     );
 }
+
+#[test]
+fn raw_view_searches_keywords_and_keeps_the_input_at_the_bottom() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let exports = dir.path().join("exports");
+    std::fs::create_dir_all(&exports).unwrap();
+    let server = runtime
+        .block_on(MockPop3Server::start(MockConfig {
+            messages: vec![message_one(), message_two()],
+            ..Default::default()
+        }))
+        .expect("mock server");
+    let config = write_config(dir.path(), server.addr().port(), &exports, 20);
+    let mut herald = Herald::open(Some(&config)).expect("open herald");
+    runtime
+        .block_on(herald.sync(SyncOptions {
+            account: Some("work".to_string()),
+            all: true,
+            with_body: true,
+            ..Default::default()
+        }))
+        .expect("sync");
+    let mut app = App::new(herald, runtime, Some("work".to_string()));
+    assert_eq!(app.messages[0].uidl, "m2");
+    app.load_raw();
+    assert!(
+        matches!(app.mode, herald_tui::app::Mode::Raw),
+        "{}",
+        app.status_text()
+    );
+
+    app.handle_key(key(KeyCode::Char('/')));
+    assert!(app.raw_search.as_ref().is_some_and(|search| search.editing));
+    assert!(app.status_text().contains("输入关键字"));
+    let empty = compact(&render(&app, 120, 40));
+    assert!(empty.contains("查找:"), "{empty}");
+    assert!(empty.contains("0/0"), "{empty}");
+
+    for ch in "会议".chars() {
+        app.handle_key(key(KeyCode::Char(ch)));
+    }
+    let search = app.raw_search.as_ref().expect("raw search");
+    assert_eq!(search.matches.len(), 2, "subject and body both match");
+    assert_eq!(search.current, 0);
+    assert!(app.status_text().contains("匹配 2 处"));
+    let first = compact(&render(&app, 120, 40));
+    assert!(first.contains("查找:会议"), "{first}");
+    assert!(first.contains("1/2"), "{first}");
+
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.raw_search.as_ref().unwrap().current, 1);
+    assert!(app.status_text().contains("匹配 2/2"));
+    let second = compact(&render(&app, 120, 40));
+    assert!(second.contains("2/2"), "{second}");
+
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(
+        app.raw_search.as_ref().unwrap().current,
+        0,
+        "Enter wraps around"
+    );
+
+    app.handle_key(key(KeyCode::Esc));
+    let search = app.raw_search.as_ref().unwrap();
+    assert!(!search.editing);
+    assert_eq!(search.matches.len(), 2, "closing input keeps highlights");
+    let closed = compact(&render(&app, 120, 40));
+    assert!(!closed.contains("查找:"), "{closed}");
+
+    app.handle_key(key(KeyCode::Char('n')));
+    assert_eq!(app.raw_search.as_ref().unwrap().current, 1);
+    app.handle_key(key(KeyCode::Char('n')));
+    assert_eq!(app.raw_search.as_ref().unwrap().current, 0);
+    app.handle_key(key(KeyCode::Char('N')));
+    assert_eq!(app.raw_search.as_ref().unwrap().current, 1);
+
+    app.handle_key(key(KeyCode::Char('/')));
+    for ch in "不存在XYZ".chars() {
+        app.handle_key(key(KeyCode::Char(ch)));
+    }
+    assert!(app.raw_search.as_ref().unwrap().matches.is_empty());
+    assert!(app.status_text().contains("未找到"));
+    let missing = compact(&render(&app, 120, 40));
+    assert!(missing.contains("0/0"), "{missing}");
+
+    app.handle_key(key(KeyCode::Esc));
+    app.handle_key(key(KeyCode::Esc));
+    assert!(matches!(app.mode, herald_tui::app::Mode::Browse));
+    assert!(app.raw_search.is_none());
+    assert!(app.raw.is_none());
+}

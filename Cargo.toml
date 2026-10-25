@@ -30,7 +30,7 @@ fastembed = { version = "7.5", default-features = false, features = ["ort-downlo
 futures-util = "0.3"
 jieba-rs = "0.11"
 mail-parser = { version = "0.11.3", features = ["full_encoding"] }
-ratatui = "0.30"
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 rcgen = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 rusqlite = { version = "0.37", default-features = false, features = ["bundled"] }
