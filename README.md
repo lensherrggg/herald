@@ -137,6 +137,8 @@ HF_ENDPOINT=https://hf-mirror.example ./target/release/herald models download
 
 下载清单：`model.onnx`、`tokenizer.json`、`config.json`、`special_tokens_map.json`、`tokenizer_config.json`。已存在且非空的文件默认跳过。
 
+默认使用 `Xenova/bge-small-zh-v1.5` 的 ONNX 转换权重：BAAI 官方仓库只提供 PyTorch 权重，没有 `model.onnx`。模型本身仍是 BAAI 的 `bge-small-zh-v1.5`；也可以显式指定其他含 ONNX 文件的仓库。
+
 下载目录规则：
 
 - 默认把 `model.onnx` 和 4 个 tokenizer 文件放在模型目录。

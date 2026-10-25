@@ -11,7 +11,9 @@ use crate::paths::ResolvedPaths;
 use crate::semantic::{MODEL_FILE, TOKENIZER_FILES};
 
 pub const DEFAULT_MIRROR: &str = "https://huggingface.co";
-pub const DEFAULT_REPO: &str = "BAAI";
+/// Xenova hosts the ONNX conversion of BAAI's model; BAAI's own repository
+/// only ships PyTorch weights, so it cannot serve `model.onnx`.
+pub const DEFAULT_REPO: &str = "Xenova";
 
 #[derive(Debug, Clone, Default)]
 pub struct DownloadOptions {
@@ -282,7 +284,7 @@ mod tests {
     fn builds_urls_for_default_mirror() {
         assert_eq!(
             model_url("https://huggingface.co", "bge-small-zh-v1.5", "config.json"),
-            "https://huggingface.co/BAAI/bge-small-zh-v1.5/resolve/main/config.json"
+            "https://huggingface.co/Xenova/bge-small-zh-v1.5/resolve/main/config.json"
         );
         assert_eq!(
             model_url("https://mirror.example/hf/", "Org/model", "model.onnx"),

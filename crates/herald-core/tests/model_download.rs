@@ -9,7 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
-const REPO_PREFIX: &str = "/BAAI/bge-small-zh-v1.5/resolve/main/";
+const REPO_PREFIX: &str = "/Xenova/bge-small-zh-v1.5/resolve/main/";
 
 fn body_for(path: &str) -> Option<&'static [u8]> {
     if path.ends_with("onnx/model.onnx") {

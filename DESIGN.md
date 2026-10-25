@@ -253,6 +253,7 @@ download(options)
   最终复核 5 个文件都位于各自目标目录且非空
 ```
 
+- 默认仓库为 `Xenova/bge-small-zh-v1.5`：BAAI 官方仓库只有 PyTorch 权重，没有 `model.onnx`；Xenova 提供同一模型的 ONNX 转换。
 - 下载与加载解耦：`semantic.enabled = false` 不影响下载。
 - 拆分与合并共存：默认单目录；配置 `tokenizer_path` 后按目录拆分；`--dest` 显式要求合并下载。
 - 原子性：`.part` 临时文件避免半截模型被当作可用。
