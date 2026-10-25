@@ -82,7 +82,11 @@ pub async fn download(
 
     for name in MODEL_FILES {
         let path = dest.join(name);
-        if !path.metadata().map(|m| m.is_file() && m.len() > 0).unwrap_or(false) {
+        if !path
+            .metadata()
+            .map(|m| m.is_file() && m.len() > 0)
+            .unwrap_or(false)
+        {
             return Err(HeraldError::Http(format!(
                 "下载完成后校验失败：缺少或为空 {}",
                 path.display()
@@ -163,9 +167,7 @@ fn ensure_target_dir(dest: &Path, force: bool) -> Result<()> {
     }
     if dest.is_dir() {
         let entries: Vec<_> = std::fs::read_dir(dest)?.filter_map(|e| e.ok()).collect();
-        let looks_like_model = MODEL_FILES
-            .iter()
-            .any(|name| dest.join(name).exists());
+        let looks_like_model = MODEL_FILES.iter().any(|name| dest.join(name).exists());
         if !entries.is_empty() && !looks_like_model && !force {
             return Err(HeraldError::invalid(format!(
                 "目标目录非空且不像模型目录：{}（如确认请加 --force）",
@@ -237,8 +239,7 @@ async fn fetch_to_file(client: &reqwest::Client, url: &str, target: &Path) -> Re
         let mut stream = response.bytes_stream();
         let mut total = 0u64;
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk
-                .map_err(|err| HeraldError::Http(format!("{url} 下载中断：{err}")))?;
+            let chunk = chunk.map_err(|err| HeraldError::Http(format!("{url} 下载中断：{err}")))?;
             tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await?;
             total += chunk.len() as u64;
         }

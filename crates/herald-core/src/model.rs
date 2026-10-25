@@ -114,7 +114,34 @@ pub struct SyncStatus {
     pub error_count: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageSort {
+    #[default]
+    Date,
+    From,
+    Subject,
+}
+
+impl MessageSort {
+    pub fn label(self) -> &'static str {
+        match self {
+            MessageSort::Date => "日期",
+            MessageSort::From => "发件人",
+            MessageSort::Subject => "主题",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            MessageSort::Date => MessageSort::From,
+            MessageSort::From => MessageSort::Subject,
+            MessageSort::Subject => MessageSort::Date,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageFilter {
     pub account: Option<String>,
     pub limit: usize,
@@ -122,6 +149,23 @@ pub struct MessageFilter {
     pub from: Option<String>,
     pub since: Option<String>,
     pub until: Option<String>,
+    pub sort: MessageSort,
+    pub descending: bool,
+}
+
+impl Default for MessageFilter {
+    fn default() -> Self {
+        Self {
+            account: None,
+            limit: 20,
+            offset: 0,
+            from: None,
+            since: None,
+            until: None,
+            sort: MessageSort::Date,
+            descending: true,
+        }
+    }
 }
 
 impl MessageFilter {

@@ -146,7 +146,8 @@ impl Store {
         }
 
         let vec_version: rusqlite::Result<String> =
-            self.conn.query_row("SELECT vec_version()", [], |row| row.get(0));
+            self.conn
+                .query_row("SELECT vec_version()", [], |row| row.get(0));
         if vec_version.is_ok() {
             match self.conn.execute_batch(&format!(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS message_embeddings USING vec0(
@@ -272,11 +273,8 @@ impl Store {
             |row| row.get(0),
         )?;
         if has_body.is_none() {
-            let tokens = search::index_text(
-                header.subject.as_deref(),
-                header.from.as_deref(),
-                None,
-            );
+            let tokens =
+                search::index_text(header.subject.as_deref(), header.from.as_deref(), None);
             self.replace_fts(id, &tokens)?;
         }
         Ok(id)
@@ -413,9 +411,7 @@ impl Store {
                 },
             )
             .optional()?
-            .ok_or_else(|| {
-                HeraldError::not_found(format!("附件不存在：{uidl} index {index}"))
-            })?;
+            .ok_or_else(|| HeraldError::not_found(format!("附件不存在：{uidl} index {index}")))?;
         match row.1 {
             Some(content) => Ok(AttachmentData {
                 meta: row.0,
@@ -522,12 +518,18 @@ impl Store {
 
         values.push(Box::new(filter.limit as i64));
         values.push(Box::new(filter.offset as i64));
+        let order = match filter.sort {
+            crate::model::MessageSort::Date => "COALESCE(datetime(m.date), '')",
+            crate::model::MessageSort::From => "COALESCE(lower(m.from_addr), '')",
+            crate::model::MessageSort::Subject => "COALESCE(lower(m.subject), '')",
+        };
+        let direction = if filter.descending { "DESC" } else { "ASC" };
         let sql = format!(
             r#"
             SELECT m.uidl, m.subject, m.from_addr, m.date, COALESCE(m.size, 0)
             FROM messages m
             WHERE {where_clause}
-            ORDER BY COALESCE(datetime(m.date), '') DESC, m.id DESC
+            ORDER BY {order} {direction}, m.id DESC
             LIMIT ? OFFSET ?
             "#
         );
@@ -591,15 +593,18 @@ impl Store {
             LIMIT ?3 OFFSET ?4
             "#,
         )?;
-        let rows = stmt.query_map(params![fts_query, account_id, limit as i64, offset as i64], |row| {
-            Ok(MessageSummary {
-                uidl: row.get(0)?,
-                subject: row.get(1)?,
-                from: row.get(2)?,
-                date: row.get(3)?,
-                size: row.get::<_, i64>(4)? as u64,
-            })
-        })?;
+        let rows = stmt.query_map(
+            params![fts_query, account_id, limit as i64, offset as i64],
+            |row| {
+                Ok(MessageSummary {
+                    uidl: row.get(0)?,
+                    subject: row.get(1)?,
+                    from: row.get(2)?,
+                    date: row.get(3)?,
+                    size: row.get::<_, i64>(4)? as u64,
+                })
+            },
+        )?;
         Ok(SearchResult {
             total: total as usize,
             messages: rows.collect::<rusqlite::Result<Vec<_>>>()?,
@@ -696,7 +701,12 @@ impl Store {
         })
     }
 
-    pub fn record_sync_error(&self, account_id: i64, uidl: Option<&str>, error: &str) -> Result<()> {
+    pub fn record_sync_error(
+        &self,
+        account_id: i64,
+        uidl: Option<&str>,
+        error: &str,
+    ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO sync_errors(account_id, uidl, error, at) VALUES (?1, ?2, ?3, ?4)",
             params![account_id, uidl, error, now_rfc3339()],
@@ -759,7 +769,13 @@ impl Store {
             "#,
         )?;
         let rows = stmt.query_map(params![account_id], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }

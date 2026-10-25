@@ -236,9 +236,9 @@ impl Pop3Client {
     async fn login(&mut self, username: &str, password: &str) -> Result<()> {
         let response = self.command(&format!("USER {username}")).await?;
         tracing::debug!(user = %username, response = %response, "POP3 USER");
-        self.command(&format!("PASS {password}")).await.map_err(|err| {
-            HeraldError::Auth(format!("POP3 认证失败：{err}"))
-        })?;
+        self.command(&format!("PASS {password}"))
+            .await
+            .map_err(|err| HeraldError::Auth(format!("POP3 认证失败：{err}")))?;
         tracing::debug!("POP3 认证成功");
         Ok(())
     }

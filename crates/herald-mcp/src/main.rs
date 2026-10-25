@@ -188,9 +188,8 @@ impl ServerHandler for HeraldHandler {
         let mut herald = self.herald.lock().await;
         let outcome: ToolOutcome = match params.name.as_str() {
             "list_accounts" => match parse_args::<ListAccountsArgs>(&params) {
-                Ok(_) => run(herald.accounts()).map(|accounts| {
-                    serde_json::json!({ "accounts": accounts })
-                }),
+                Ok(_) => run(herald.accounts())
+                    .map(|accounts| serde_json::json!({ "accounts": accounts })),
                 Err(result) => Err(result),
             },
             "sync_mailbox" => match parse_args::<SyncMailboxArgs>(&params) {
@@ -271,7 +270,10 @@ async fn run_sync(herald: &mut Herald, args: SyncMailboxArgs) -> ToolOutcome {
     }
 }
 
-fn list_messages(herald: &Herald, args: ListMessagesArgs) -> herald_core::Result<serde_json::Value> {
+fn list_messages(
+    herald: &Herald,
+    args: ListMessagesArgs,
+) -> herald_core::Result<serde_json::Value> {
     let limit = page_limit(args.limit)?;
     let filter = MessageFilter {
         account: args.account.clone(),
@@ -280,6 +282,7 @@ fn list_messages(herald: &Herald, args: ListMessagesArgs) -> herald_core::Result
         from: args.from,
         since: args.since,
         until: args.until,
+        ..Default::default()
     };
     let (total, messages) = herald.list_messages(args.account.as_deref(), &filter)?;
     Ok(serde_json::json!({ "total": total, "messages": messages }))
@@ -323,7 +326,11 @@ async fn run_get_raw(options: Pop3Options, uidl: String) -> ToolOutcome {
         .await
         .map_err(herald_error)?;
     let truncated = raw.len() > RAW_LIMIT;
-    let slice = if truncated { &raw[..RAW_LIMIT] } else { &raw[..] };
+    let slice = if truncated {
+        &raw[..RAW_LIMIT]
+    } else {
+        &raw[..]
+    };
     Ok(serde_json::json!({
         "uidl": uidl,
         "raw": String::from_utf8_lossy(slice),
@@ -345,7 +352,9 @@ fn run_search(herald: &Herald, args: SearchMessagesArgs) -> ToolOutcome {
 }
 
 fn run_sync_status(herald: &Herald, args: GetSyncStatusArgs) -> ToolOutcome {
-    let status = herald.status(args.account.as_deref()).map_err(herald_error)?;
+    let status = herald
+        .status(args.account.as_deref())
+        .map_err(herald_error)?;
     Ok(serde_json::json!({
         "account": status.account,
         "last_sync_at": status.last_sync_at,
@@ -357,9 +366,7 @@ fn run_sync_status(herald: &Herald, args: GetSyncStatusArgs) -> ToolOutcome {
 }
 
 fn page_limit(limit: Option<u32>) -> herald_core::Result<usize> {
-    let limit = limit
-        .map(|value| value as usize)
-        .unwrap_or(DEFAULT_LIMIT);
+    let limit = limit.map(|value| value as usize).unwrap_or(DEFAULT_LIMIT);
     if limit == 0 || limit > MAX_LIMIT {
         return Err(HeraldError::invalid(format!(
             "limit 必须在 1-{MAX_LIMIT} 之间"

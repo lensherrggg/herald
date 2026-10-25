@@ -295,10 +295,7 @@ impl Config {
     }
 
     pub fn export_dir(&self) -> Option<PathBuf> {
-        self.attachments
-            .export_dir
-            .as_deref()
-            .map(expand_tilde)
+        self.attachments.export_dir.as_deref().map(expand_tilde)
     }
 
     pub fn sample() -> String {
@@ -353,7 +350,10 @@ pub fn expand_tilde(value: &str) -> PathBuf {
     if value == "~" {
         return dirs::home_dir().unwrap_or_else(|| PathBuf::from(value));
     }
-    if let Some(rest) = value.strip_prefix("~/").or_else(|| value.strip_prefix("~\\")) {
+    if let Some(rest) = value
+        .strip_prefix("~/")
+        .or_else(|| value.strip_prefix("~\\"))
+    {
         if let Some(home) = dirs::home_dir() {
             return home.join(rest);
         }

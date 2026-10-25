@@ -252,7 +252,17 @@ async fn run() -> anyhow::Result<()> {
             account,
             raw,
             full_body,
-        } => show(&mut herald, account.as_deref(), &uidl, raw, full_body, cli.json).await,
+        } => {
+            show(
+                &mut herald,
+                account.as_deref(),
+                &uidl,
+                raw,
+                full_body,
+                cli.json,
+            )
+            .await
+        }
         Command::Status { account } => {
             let status = herald.status(account.as_deref())?;
             let errors = herald.sync_errors(account.as_deref(), 5)?;
@@ -263,7 +273,10 @@ async fn run() -> anyhow::Result<()> {
                 }))?;
             } else {
                 println!("账户：{}", status.account);
-                println!("最后同步：{}", status.last_sync_at.as_deref().unwrap_or("从未"));
+                println!(
+                    "最后同步：{}",
+                    status.last_sync_at.as_deref().unwrap_or("从未")
+                );
                 println!("最后 UIDL：{}", status.last_uidl.as_deref().unwrap_or("-"));
                 println!("服务器邮件数：{}", status.total_messages);
                 println!("本地邮件数：{}", status.local_messages);
@@ -332,10 +345,7 @@ fn init(config_override: Option<&Path>, force: bool) -> anyhow::Result<()> {
     let layout = PathLayout::resolve(config_override)?;
     let path = &layout.config_path;
     if path.exists() && !force {
-        bail!(
-            "配置文件已存在：{}（如需覆盖请加 --force）",
-            path.display()
-        );
+        bail!("配置文件已存在：{}（如需覆盖请加 --force）", path.display());
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -419,8 +429,14 @@ async fn show(
     }
 
     println!("UIDL：{}", detail.header.uidl);
-    println!("主题：{}", detail.header.subject.as_deref().unwrap_or("(无)"));
-    println!("发件人：{}", detail.header.from.as_deref().unwrap_or("(无)"));
+    println!(
+        "主题：{}",
+        detail.header.subject.as_deref().unwrap_or("(无)")
+    );
+    println!(
+        "发件人：{}",
+        detail.header.from.as_deref().unwrap_or("(无)")
+    );
     println!("收件人：{}", detail.header.to.join(", "));
     if !detail.header.cc.is_empty() {
         println!("抄送：{}", detail.header.cc.join(", "));

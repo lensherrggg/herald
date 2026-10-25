@@ -44,9 +44,8 @@ impl PathLayout {
             });
         }
 
-        let exe = std::env::current_exe().map_err(|err| {
-            HeraldError::Config(format!("无法定位可执行文件所在目录：{err}"))
-        })?;
+        let exe = std::env::current_exe()
+            .map_err(|err| HeraldError::Config(format!("无法定位可执行文件所在目录：{err}")))?;
         let exe_dir = exe
             .parent()
             .map(Path::to_path_buf)
@@ -208,7 +207,9 @@ mod tests {
         assert_eq!(paths.database_path, temp.path().join("herald.db"));
         assert_eq!(
             paths.models_dir,
-            temp.path().join("models").join(crate::config::DEFAULT_MODEL_NAME)
+            temp.path()
+                .join("models")
+                .join(crate::config::DEFAULT_MODEL_NAME)
         );
     }
 

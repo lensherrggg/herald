@@ -107,16 +107,16 @@ impl Client {
             .await;
         let response = self.recv().await;
         assert_eq!(response["id"], json!(id), "unexpected response: {response}");
-        assert!(response.get("error").is_none(), "JSON-RPC error: {response}");
+        assert!(
+            response.get("error").is_none(),
+            "JSON-RPC error: {response}"
+        );
         response["result"].clone()
     }
 
     async fn call_tool(&mut self, name: &str, args: Value) -> Value {
-        self.request(
-            "tools/call",
-            json!({"name": name, "arguments": args}),
-        )
-        .await
+        self.request("tools/call", json!({"name": name, "arguments": args}))
+            .await
     }
 }
 
@@ -199,10 +199,7 @@ async fn seven_tools_round_trip_over_stdio() {
     assert_eq!(listed["total"], 1);
     assert_eq!(listed["messages"][0]["uidl"], "m1");
     assert_eq!(listed["messages"][0]["subject"], "项目进度汇报");
-    assert_eq!(
-        listed["messages"][0]["from"],
-        "张三 <zhangsan@example.com>"
-    );
+    assert_eq!(listed["messages"][0]["from"], "张三 <zhangsan@example.com>");
 
     let found = tool_payload(
         &client
@@ -212,16 +209,9 @@ async fn seven_tools_round_trip_over_stdio() {
     assert_eq!(found["total"], 1);
     assert_eq!(found["messages"][0]["uidl"], "m1");
 
-    let detail = tool_payload(
-        &client
-            .call_tool("get_message", json!({"uidl": "m1"}))
-            .await,
-    );
+    let detail = tool_payload(&client.call_tool("get_message", json!({"uidl": "m1"})).await);
     assert_eq!(detail["subject"], "项目进度汇报");
-    assert!(detail["body_text"]
-        .as_str()
-        .unwrap()
-        .contains("进度正常"));
+    assert!(detail["body_text"].as_str().unwrap().contains("进度正常"));
     assert_eq!(detail["body_truncated"], false);
     assert!(
         detail.get("attachments").is_none(),
@@ -233,7 +223,10 @@ async fn seven_tools_round_trip_over_stdio() {
             .call_tool("get_raw_message", json!({"uidl": "m1"}))
             .await,
     );
-    assert!(raw["raw"].as_str().unwrap().contains("Subject: 项目进度汇报"));
+    assert!(raw["raw"]
+        .as_str()
+        .unwrap()
+        .contains("Subject: 项目进度汇报"));
     assert_eq!(raw["truncated"], false);
 
     let status = tool_payload(&client.call_tool("get_sync_status", json!({})).await);
@@ -246,8 +239,7 @@ async fn seven_tools_round_trip_over_stdio() {
         .await;
     assert_eq!(rejected["isError"], json!(true));
     assert_eq!(
-        rejected["structuredContent"]["code"],
-        "INVALID_ARGUMENT",
+        rejected["structuredContent"]["code"], "INVALID_ARGUMENT",
         "unexpected error payload: {rejected}"
     );
 

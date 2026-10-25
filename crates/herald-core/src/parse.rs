@@ -57,7 +57,10 @@ fn raw_8bit_header(raw: &[u8], name: &str) -> Option<Vec<u8>> {
     for line in raw[..header_end].split(|byte| *byte == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
         if let Some(current) = value.as_mut() {
-            if line.first().is_some_and(|byte| matches!(byte, b' ' | b'\t')) {
+            if line
+                .first()
+                .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+            {
                 current.push(b' ');
                 current.extend_from_slice(trim_ascii(line));
                 continue;
@@ -109,7 +112,10 @@ fn parse_parsed(
     raw_len: u64,
     include_attachment_content: bool,
 ) -> Result<ParsedMessage> {
-    let from = message.from().and_then(|list| list.first()).map(format_addr);
+    let from = message
+        .from()
+        .and_then(|list| list.first())
+        .map(format_addr);
     let to = message
         .to()
         .map(|list| list.iter().map(format_addr).collect::<Vec<_>>())
@@ -138,10 +144,12 @@ fn parse_parsed(
 
     let mut attachments = Vec::new();
     for (index, part) in message.attachments().enumerate() {
-        let mime_type = part.content_type().map(|content_type| match content_type.subtype() {
-            Some(subtype) => format!("{}/{}", content_type.ctype(), subtype),
-            None => content_type.ctype().to_string(),
-        });
+        let mime_type = part
+            .content_type()
+            .map(|content_type| match content_type.subtype() {
+                Some(subtype) => format!("{}/{}", content_type.ctype(), subtype),
+                None => content_type.ctype().to_string(),
+            });
         let meta = AttachmentMeta {
             index,
             filename: part.attachment_name().map(str::to_string),

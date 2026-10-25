@@ -40,7 +40,9 @@ fn message(uidl: &str, subject: &str, body: &str, attachment: bool) -> MockMessa
              --b--\r\n",
         );
     } else {
-        raw.push_str("Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n");
+        raw.push_str(
+            "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n",
+        );
         raw.push_str(body);
         raw.push_str("\r\n");
     }
@@ -123,7 +125,10 @@ async fn connects_and_reads_in_all_security_modes() {
         let headers = client.fetch_headers(1).await.unwrap();
         let text = String::from_utf8_lossy(&headers);
         assert!(text.contains("Subject:"));
-        assert!(!text.contains("你好，世界"), "TOP 0 must not return the body");
+        assert!(
+            !text.contains("你好，世界"),
+            "TOP 0 must not return the body"
+        );
 
         let raw = client.retr(1).await.unwrap();
         assert!(String::from_utf8_lossy(&raw).contains("你好，世界"));
@@ -143,7 +148,10 @@ async fn wrong_password_is_an_auth_error() {
         timeout: Duration::from_secs(5),
         extra_roots: Vec::new(),
     };
-    let err = Pop3Client::connect(&options).await.err().expect("must fail");
+    let err = Pop3Client::connect(&options)
+        .await
+        .err()
+        .expect("must fail");
     assert!(matches!(err, herald_core::HeraldError::Auth(_)));
 }
 
@@ -175,10 +183,13 @@ async fn sync_is_incremental_and_respects_limit() {
     assert!(first.errors.is_empty());
 
     let (total, messages) = herald
-        .list_messages(None, &MessageFilter {
-            limit: 20,
-            ..Default::default()
-        })
+        .list_messages(
+            None,
+            &MessageFilter {
+                limit: 20,
+                ..Default::default()
+            },
+        )
         .unwrap();
     assert_eq!(total, 2);
     assert!(messages.iter().all(|m| m.uidl != "u1"));
@@ -201,7 +212,10 @@ async fn sync_is_incremental_and_respects_limit() {
 
     let detail = herald.get_stored_message(None, "u1").unwrap();
     assert_eq!(detail.header.subject.as_deref(), Some("季度项目进度"));
-    assert_eq!(detail.body_text.as_deref().map(str::trim), Some("本周项目进度正常。"));
+    assert_eq!(
+        detail.body_text.as_deref().map(str::trim),
+        Some("本周项目进度正常。")
+    );
     assert!(detail.body_cached);
 }
 

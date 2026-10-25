@@ -65,10 +65,7 @@ pub async fn run_with_options(
     for (number, uidl) in &new_messages {
         fetched += 1;
         let size = sizes.get(number).copied().unwrap_or(0);
-        let need_body = options.with_body
-            || threshold == 0
-            || size == 0
-            || size <= threshold;
+        let need_body = options.with_body || threshold == 0 || size == 0 || size <= threshold;
         match process_one(
             &mut client,
             store,
@@ -117,7 +114,8 @@ pub async fn run_with_options(
     }
 
     let last_uidl = server_uidls.last().map(|(_, uidl)| uidl.clone());
-    let synced_at = store.update_sync_state(account_id, last_uidl.as_deref(), server_uidls.len())?;
+    let synced_at =
+        store.update_sync_state(account_id, last_uidl.as_deref(), server_uidls.len())?;
     let _ = client.quit().await;
 
     Ok(SyncOutcome {
@@ -196,11 +194,7 @@ async fn process_one(
                 if content.len() as u64 > max_attachment {
                     warnings.push(format!(
                         "附件 {} 超过大小上限 {} 字节，已跳过内容下载",
-                        attachment
-                            .meta
-                            .filename
-                            .as_deref()
-                            .unwrap_or("<未命名>"),
+                        attachment.meta.filename.as_deref().unwrap_or("<未命名>"),
                         max_attachment
                     ));
                     continue;

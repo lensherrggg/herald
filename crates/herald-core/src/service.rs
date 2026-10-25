@@ -100,7 +100,10 @@ impl Herald {
     }
 
     pub async fn sync(&mut self, options: SyncOptions) -> Result<SyncReport> {
-        let account = self.config.resolve_account(options.account.as_deref())?.clone();
+        let account = self
+            .config
+            .resolve_account(options.account.as_deref())?
+            .clone();
         let outcome = sync::run(&self.config, &mut self.store, &account, &options).await?;
         if options.with_embeddings {
             let jobs = if options.index {
@@ -171,11 +174,16 @@ impl Herald {
         offset: usize,
     ) -> Result<SearchResult> {
         let (_, account_id) = self.account_and_id(account)?;
-        let mut result = self
-            .semantic
-            .search(&self.store, account_id, query, limit.saturating_add(offset))?;
+        let mut result =
+            self.semantic
+                .search(&self.store, account_id, query, limit.saturating_add(offset))?;
         result.total = result.messages.len();
-        result.messages = result.messages.into_iter().skip(offset).take(limit).collect();
+        result.messages = result
+            .messages
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect();
         Ok(result)
     }
 
@@ -249,11 +257,7 @@ impl Herald {
         Ok(status)
     }
 
-    pub fn sync_errors(
-        &self,
-        account: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<SyncErrorRecord>> {
+    pub fn sync_errors(&self, account: Option<&str>, limit: usize) -> Result<Vec<SyncErrorRecord>> {
         let (_, account_id) = self.account_and_id(account)?;
         self.store.recent_sync_errors(account_id, limit)
     }

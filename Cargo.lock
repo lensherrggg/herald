@@ -1166,10 +1166,8 @@ dependencies = [
  "crossterm",
  "herald-core",
  "ratatui",
- "serde_json",
+ "tempfile",
  "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

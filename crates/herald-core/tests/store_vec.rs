@@ -35,7 +35,9 @@ fn fts_index_is_replaced_and_searchable() {
     let first = store
         .upsert_header(account_id, &header("u1", "季度项目进度"))
         .unwrap();
-    let second = store.upsert_header(account_id, &header("u2", "午餐通知")).unwrap();
+    let second = store
+        .upsert_header(account_id, &header("u2", "午餐通知"))
+        .unwrap();
 
     store
         .set_body(
@@ -169,8 +171,12 @@ fn sqlite_vec_loads_and_returns_nearest_neighbour() {
         "sqlite-vec must be registered and vec0 available"
     );
     let account_id = store.ensure_account(&account()).unwrap();
-    let first = store.upsert_header(account_id, &header("u1", "项目")).unwrap();
-    let second = store.upsert_header(account_id, &header("u2", "午餐")).unwrap();
+    let first = store
+        .upsert_header(account_id, &header("u1", "项目"))
+        .unwrap();
+    let second = store
+        .upsert_header(account_id, &header("u2", "午餐"))
+        .unwrap();
 
     let mut a = vec![0.0f32; EMBEDDING_DIM];
     a[0] = 1.0;

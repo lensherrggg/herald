@@ -44,9 +44,7 @@ async fn mirror() -> (String, JoinHandle<()>) {
                     .next()
                     .and_then(|line| line.split_whitespace().nth(1))
                     .unwrap_or("");
-                let response = if let Some(body) = path
-                    .strip_prefix(REPO_PREFIX)
-                    .and_then(body_for)
+                let response = if let Some(body) = path.strip_prefix(REPO_PREFIX).and_then(body_for)
                 {
                     let mut response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
