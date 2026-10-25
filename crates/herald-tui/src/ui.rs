@@ -7,8 +7,8 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use crate::app::{
-    attachment_line, body_text, format_size, join_addrs, raw_rows, sender_short, shorten_date, App,
-    Focus, Mode,
+    attachment_line, body_text, format_size, join_addrs, raw_rows, sender_short, shorten_date,
+    wrap_line, App, Focus, Mode,
 };
 use crate::browser::Browser;
 use herald_core::model::{SearchField, SearchKind};
@@ -204,8 +204,11 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
         "── 正文 ──",
         Style::new().add_modifier(Modifier::DIM),
     )));
+    let inner_width = area.width.saturating_sub(2).max(1);
     for line in body_text(detail).lines() {
-        lines.push(Line::from(line.to_string()));
+        for piece in wrap_line(line, inner_width) {
+            lines.push(Line::from(piece));
+        }
     }
     let paragraph = Paragraph::new(Text::from(lines))
         .block(block)

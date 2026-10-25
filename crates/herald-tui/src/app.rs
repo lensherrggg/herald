@@ -1315,7 +1315,7 @@ fn find_from(line: &str, from: usize, query: &str) -> Option<usize> {
 /// between CJK characters, so Chinese paragraphs fill each row instead of
 /// pushing a whole run to the next line; overlong ASCII tokens hard-wrap.
 pub fn raw_rows(text: &str, width: u16) -> Vec<RawRow> {
-    let width = width.max(1) as usize;
+    let width = width.max(1);
     let mut rows = Vec::new();
     for (line, content) in text.lines().enumerate() {
         if content.is_empty() {
@@ -1326,49 +1326,66 @@ pub fn raw_rows(text: &str, width: u16) -> Vec<RawRow> {
             });
             continue;
         }
-        let mut start = 0;
-        while start < content.len() {
-            let mut end = start;
-            let mut row_width = 0usize;
-            let mut last_break = None;
-            let mut overflowed = false;
-            for (offset, ch) in content[start..].char_indices() {
-                let index = start + offset;
-                let ch_width = ch.width().unwrap_or(0);
-                if row_width + ch_width > width && row_width > 0 {
-                    overflowed = true;
-                    break;
-                }
-                row_width += ch_width;
-                end = index + ch.len_utf8();
-                let next = content[end..].chars().next();
-                if break_allowed(ch, next) {
-                    last_break = Some(end);
-                }
-            }
-            let row_end = if overflowed {
-                last_break.unwrap_or(end)
-            } else {
-                end
-            };
-            let row_end = if row_end > start {
-                row_end
-            } else {
-                content[start..]
-                    .chars()
-                    .next()
-                    .map(|ch| start + ch.len_utf8())
-                    .unwrap_or(content.len())
-            };
-            rows.push(RawRow {
-                line,
-                start,
-                end: row_end,
-            });
-            start = row_end;
+        for (start, end) in line_ranges(content, width) {
+            rows.push(RawRow { line, start, end });
         }
     }
     rows
+}
+
+/// Split one logical line into display rows that fit `width` columns.
+pub fn wrap_line(text: &str, width: u16) -> Vec<String> {
+    let width = width.max(1);
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+    line_ranges(text, width)
+        .into_iter()
+        .map(|(start, end)| text[start..end].to_string())
+        .collect()
+}
+
+fn line_ranges(content: &str, width: u16) -> Vec<(usize, usize)> {
+    let width = width.max(1) as usize;
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while start < content.len() {
+        let mut end = start;
+        let mut row_width = 0usize;
+        let mut last_break = None;
+        let mut overflowed = false;
+        for (offset, ch) in content[start..].char_indices() {
+            let index = start + offset;
+            let ch_width = ch.width().unwrap_or(0);
+            if row_width + ch_width > width && row_width > 0 {
+                overflowed = true;
+                break;
+            }
+            row_width += ch_width;
+            end = index + ch.len_utf8();
+            let next = content[end..].chars().next();
+            if break_allowed(ch, next) {
+                last_break = Some(end);
+            }
+        }
+        let row_end = if overflowed {
+            last_break.unwrap_or(end)
+        } else {
+            end
+        };
+        let row_end = if row_end > start {
+            row_end
+        } else {
+            content[start..]
+                .chars()
+                .next()
+                .map(|ch| start + ch.len_utf8())
+                .unwrap_or(content.len())
+        };
+        ranges.push((start, row_end));
+        start = row_end;
+    }
+    ranges
 }
 
 fn break_allowed(after: char, next: Option<char>) -> bool {
@@ -1652,5 +1669,15 @@ mod tests {
         assert_eq!(rows[0].end - rows[0].start, 40);
         assert_eq!(rows[1].end - rows[1].start, 40);
         assert_eq!(rows[2].end - rows[2].start, 20);
+    }
+
+    #[test]
+    fn wrap_line_keeps_cjk_labels_together() {
+        let text = format!("第 01 段：{}", "中文长文本测试。".repeat(10));
+        let pieces = wrap_line(&text, 40);
+        assert!(pieces.len() > 1);
+        assert!(pieces[0].contains("第 01 段："), "{}", pieces[0]);
+        assert_eq!(pieces.concat(), text);
+        assert_eq!(wrap_line("", 20), vec![String::new()]);
     }
 }

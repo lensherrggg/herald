@@ -677,3 +677,51 @@ fn raw_view_wraps_long_cjk_lines_without_splitting_labels() {
         "content row wider than the inner width:\n{screen}"
     );
 }
+
+#[test]
+fn detail_preview_wraps_long_cjk_body_without_orphaning_labels() {
+    let (mut app, _dir) = synced_app(20, vec![message_one()]);
+    let body = format!("第 01 段：{}", "中文长文本测试。".repeat(20));
+    app.detail = Some(MessageDetail {
+        header: MessageHeader {
+            uidl: "m1".to_string(),
+            message_id: None,
+            from: Some("sender@example.com".to_string()),
+            to: vec!["bob@example.com".to_string()],
+            cc: vec![],
+            subject: Some("长正文测试".to_string()),
+            date: Some("2024-09-03T10:00:00+08:00".to_string()),
+            size: 500,
+        },
+        body_text: Some(body),
+        body_html: None,
+        body_cached: true,
+        attachments: vec![],
+        is_read: false,
+    });
+    app.focus = Focus::Detail;
+
+    let rows = render_rows(&app, 80, 40);
+    let screen = rows.join("\n");
+    let compacted = compact(&screen);
+    assert!(compacted.contains("第01段：中文"), "{screen}");
+    assert!(!compacted.contains("第01│段"), "{screen}");
+
+    let body_rows: Vec<&String> = rows
+        .iter()
+        .filter(|row| compact(row).contains("第01段"))
+        .collect();
+    assert_eq!(
+        body_rows.len(),
+        1,
+        "label should stay on one row:\n{screen}"
+    );
+    let content = body_rows[0]
+        .strip_prefix('│')
+        .and_then(|row| row.strip_suffix('│'))
+        .expect("bordered detail row");
+    assert!(
+        content.chars().count() <= 78,
+        "detail row wider than the panel:\n{screen}"
+    );
+}
