@@ -679,7 +679,7 @@ fn filter_status(browser: &Browser) -> String {
     } else if browser.filter_jump_target().is_some() {
         "Enter 跳转 · Esc 清除"
     } else {
-        "Enter 确定 · Esc 清除"
+        "Enter 确定 · 拼音首字母 · Esc 清除"
     };
     format!("{} 项 · {hint}", browser.filter_count())
 }

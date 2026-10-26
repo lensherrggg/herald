@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use pinyin::ToPinyin;
+
 use crate::dir_history::DirHistory;
 
 const JUMP_LIMIT: usize = 9;
@@ -106,6 +108,7 @@ impl Browser {
     /// Rebuild the visible list from the current filter. The parent row is
     /// always visible so navigation never traps the user. Queries containing
     /// a path separator match the absolute path instead of just the name.
+    /// ASCII queries also match Chinese names by pinyin initials (`xm` → 项目).
     pub fn apply_filter(&mut self) {
         let previous = self
             .entries
@@ -113,17 +116,34 @@ impl Browser {
             .map(|entry| entry.path.clone());
         let query = self.filter.to_lowercase();
         let by_path = query.contains('/') || (cfg!(windows) && query.contains('\\'));
+        let ascii_query = !query.is_empty() && query.is_ascii();
+        let compact_query: String = query
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect();
         self.entries = self
             .all_entries
             .iter()
             .filter(|entry| {
-                entry.name == ".."
-                    || query.is_empty()
-                    || if by_path {
-                        entry.path.to_string_lossy().to_lowercase().contains(&query)
-                    } else {
-                        entry.name.to_lowercase().contains(&query)
-                    }
+                if entry.name == ".." || query.is_empty() {
+                    return true;
+                }
+                let text = if by_path {
+                    entry.path.to_string_lossy().to_lowercase()
+                } else {
+                    entry.name.to_lowercase()
+                };
+                if text.contains(&query) {
+                    return true;
+                }
+                if !ascii_query {
+                    return false;
+                }
+                let Some((skeleton, compact)) = pinyin_keys(&text) else {
+                    return false;
+                };
+                skeleton.contains(&query)
+                    || (!by_path && !compact_query.is_empty() && compact.contains(&compact_query))
             })
             .cloned()
             .collect();
@@ -313,6 +333,35 @@ impl Browser {
             entry.name.clone()
         }
     }
+}
+
+/// Pinyin initials for every Chinese character, with other characters kept
+/// lowercased. The first key preserves separators for absolute-path filters;
+/// the second drops punctuation so `xmgl` can match `项目 管理`. Returns
+/// `None` when the text has no Chinese characters with pinyin data.
+fn pinyin_keys(text: &str) -> Option<(String, String)> {
+    let mut skeleton = String::with_capacity(text.len());
+    let mut compact = String::with_capacity(text.len());
+    let mut translated = false;
+    for ch in text.chars() {
+        match ch.to_pinyin() {
+            Some(pinyin) => {
+                let initial = pinyin.first_letter();
+                skeleton.push_str(initial);
+                compact.push_str(initial);
+                translated = true;
+            }
+            None => {
+                for lower in ch.to_lowercase() {
+                    skeleton.push(lower);
+                    if lower.is_ascii_alphanumeric() {
+                        compact.push(lower);
+                    }
+                }
+            }
+        }
+    }
+    translated.then_some((skeleton, compact))
 }
 
 fn read_entries(dir: &Path) -> std::io::Result<Vec<BrowserEntry>> {
@@ -528,6 +577,73 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["..", "alpha"]);
         assert_eq!(browser.filter_jump_target(), Some(target));
+    }
+
+    #[test]
+    fn filters_chinese_names_by_pinyin_initials() {
+        let temp = tempfile::tempdir().unwrap();
+        for name in ["项目 管理", "项目资料", "会议纪要", "归档"] {
+            fs::create_dir(temp.path().join(name)).unwrap();
+        }
+        let mut browser = Browser::new(
+            temp.path().to_path_buf(),
+            "uidl".to_string(),
+            0,
+            "a.bin".to_string(),
+        );
+        let names = |browser: &Browser| -> Vec<String> {
+            browser
+                .entries
+                .iter()
+                .filter(|entry| entry.name != "..")
+                .map(|entry| entry.name.clone())
+                .collect()
+        };
+
+        browser.filter = "xm".to_string();
+        browser.apply_filter();
+        let matched = names(&browser);
+        assert_eq!(matched.len(), 2, "{matched:?}");
+        assert!(matched.iter().any(|name| name == "项目 管理"));
+        assert!(matched.iter().any(|name| name == "项目资料"));
+
+        browser.filter = "xmgl".to_string();
+        browser.apply_filter();
+        assert_eq!(names(&browser), vec!["项目 管理"]);
+
+        browser.filter = "hyjy".to_string();
+        browser.apply_filter();
+        assert_eq!(names(&browser), vec!["会议纪要"]);
+
+        browser.filter = "项目".to_string();
+        browser.apply_filter();
+        assert_eq!(names(&browser).len(), 2);
+    }
+
+    #[test]
+    fn path_filter_accepts_pinyin_initials() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("项目")).unwrap();
+        fs::create_dir(temp.path().join("归档")).unwrap();
+        let mut browser = Browser::new(
+            temp.path().to_path_buf(),
+            "uidl".to_string(),
+            0,
+            "a.bin".to_string(),
+        );
+
+        let mut query = temp.path().to_string_lossy().to_string();
+        query.push(std::path::MAIN_SEPARATOR);
+        query.push_str("xm");
+        browser.filter = query;
+        browser.apply_filter();
+        let names: Vec<_> = browser
+            .entries
+            .iter()
+            .filter(|entry| entry.name != "..")
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["项目"]);
     }
 
     #[test]

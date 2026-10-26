@@ -8,6 +8,7 @@ license.workspace = true
 herald-core = { workspace = true, features = ["semantic"] }
 anyhow.workspace = true
 crossterm.workspace = true
+pinyin.workspace = true
 ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
