@@ -356,6 +356,8 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let status_style = if app.status.error {
         error_style(app)
+    } else if app.syncing {
+        accent(app)
     } else if app.color {
         Style::new().fg(Color::Green)
     } else {

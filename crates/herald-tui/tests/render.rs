@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use herald_core::mock_pop3::{MockConfig, MockMessage, MockPop3Server};
@@ -470,6 +471,38 @@ fn read_state_is_local_and_tracks_preview_open_and_toggle() {
         .get_stored_message(Some("work"), "m2")
         .expect("stored message");
     assert!(stored.is_read, "the flag must be persisted in SQLite");
+}
+
+#[test]
+fn syncing_state_stays_visible_in_the_status_line() {
+    let (mut app, _dir) = synced_app(20, vec![message_one()]);
+    app.syncing = true;
+    app.status.text = "就绪".to_string();
+    let screen = compact(&render(&app, 120, 30));
+    assert!(screen.contains("同步中"), "{screen}");
+
+    app.status.text = "已切换排序".to_string();
+    let screen = compact(&render(&app, 120, 30));
+    assert!(screen.contains("同步中"), "{screen}");
+    assert!(screen.contains("已切换排序"), "{screen}");
+}
+
+#[test]
+fn background_sync_finishes_and_reloads_the_list() {
+    let (mut app, _dir, _server) = synced_app_with_server(20, vec![message_one(), message_two()]);
+    app.sync(false);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while app.syncing && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+        app.poll_sync();
+    }
+    assert!(!app.syncing, "{}", app.status_text());
+    assert!(
+        app.status_text().contains("同步完成"),
+        "{}",
+        app.status_text()
+    );
+    assert_eq!(app.total, 2);
 }
 
 #[test]

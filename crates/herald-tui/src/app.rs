@@ -1,10 +1,13 @@
 use std::cell::Cell;
 use std::path::Path;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
+use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use herald_core::model::{
     AccountSummary, AttachmentMeta, MessageDetail, MessageFilter, MessageSort, MessageSummary,
-    SearchField, SearchKind, SearchOptions, SearchResult, SyncOptions, SyncStatus,
+    SearchField, SearchKind, SearchOptions, SearchResult, SyncOptions, SyncReport, SyncStatus,
 };
 use herald_core::parse::{raw_attachments, RawAttachment};
 use herald_core::paths::ResolvedPaths;
@@ -189,6 +192,9 @@ pub struct App {
     pub accounts: Vec<AccountSummary>,
     pub account: Option<String>,
     pub sync_status: Option<SyncStatus>,
+    pub syncing: bool,
+    sync_all: bool,
+    sync_rx: Option<Receiver<Result<SyncReport, String>>>,
     pub messages: Vec<MessageSummary>,
     pub total: usize,
     pub unread_total: usize,
@@ -242,6 +248,9 @@ impl App {
             accounts,
             account,
             sync_status: None,
+            syncing: false,
+            sync_all: false,
+            sync_rx: None,
             messages: Vec::new(),
             total: 0,
             unread_total: 0,
@@ -296,19 +305,44 @@ impl App {
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
+        let mut dirty = true;
         while !self.quit {
             if self.full_redraw {
                 terminal.clear()?;
                 self.full_redraw = false;
+                dirty = true;
             }
-            terminal.draw(|frame| ui::draw(frame, self))?;
-            match event::read()? {
-                Event::Key(key)
-                    if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
-                {
-                    self.handle_key(key);
+            if dirty {
+                terminal.draw(|frame| ui::draw(frame, self))?;
+                dirty = false;
+            }
+            if self.syncing {
+                // Keep accepting input while the worker syncs, and wake up
+                // periodically to pick up its result.
+                if event::poll(Duration::from_millis(150))? {
+                    match event::read()? {
+                        Event::Key(key)
+                            if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
+                        {
+                            self.handle_key(key);
+                        }
+                        _ => {}
+                    }
+                    dirty = true;
                 }
-                _ => {}
+                if self.poll_sync() {
+                    dirty = true;
+                }
+            } else {
+                match event::read()? {
+                    Event::Key(key)
+                        if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
+                    {
+                        self.handle_key(key);
+                    }
+                    _ => {}
+                }
+                dirty = true;
             }
         }
         Ok(())
@@ -523,6 +557,10 @@ impl App {
     }
 
     pub fn sync(&mut self, all: bool) {
+        if self.syncing {
+            self.status = StatusMessage::info("同步已在进行中，请稍候");
+            return;
+        }
         let options = SyncOptions {
             account: self.account.clone(),
             all,
@@ -532,10 +570,71 @@ impl App {
             with_embeddings: self.herald.semantic_enabled(),
             limit: None,
         };
-        match self.runtime.block_on(self.herald.sync(options)) {
+        let config = self.herald.config.clone();
+        let paths = self.herald.paths.clone();
+        let credentials = self.herald.credential_resolver();
+        let (tx, rx) = mpsc::channel();
+        let spawned = thread::Builder::new()
+            .name("herald-sync".to_string())
+            .spawn(move || {
+                let result = (|| -> Result<SyncReport, String> {
+                    let mut worker = Herald::open_background(config, paths, credentials)
+                        .map_err(|err| err.to_string())?;
+                    let runtime = tokio::runtime::Builder::new_multi_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|err| format!("创建同步运行时失败：{err}"))?;
+                    runtime
+                        .block_on(worker.sync(options))
+                        .map_err(|err| err.to_string())
+                })();
+                let _ = tx.send(result);
+            });
+        match spawned {
+            Ok(_) => {
+                self.syncing = true;
+                self.sync_all = all;
+                self.sync_rx = Some(rx);
+                self.status = StatusMessage::info("同步中…");
+            }
+            Err(err) => {
+                self.status = StatusMessage::error(format!("启动同步失败：{err}"));
+            }
+        }
+    }
+
+    /// Pick up a finished background sync. Returns true when the UI state
+    /// changed and needs a repaint.
+    pub fn poll_sync(&mut self) -> bool {
+        let Some(rx) = self.sync_rx.take() else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                self.syncing = false;
+                self.finish_sync(result);
+                true
+            }
+            Err(TryRecvError::Empty) => {
+                self.sync_rx = Some(rx);
+                false
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.syncing = false;
+                self.status = StatusMessage::error("同步线程意外退出");
+                true
+            }
+        }
+    }
+
+    fn finish_sync(&mut self, result: Result<SyncReport, String>) {
+        match result {
             Ok(report) => {
-                let hint =
-                    sync_limit_hint(all, report.fetched, self.herald.config.sync.default_limit);
+                let hint = sync_limit_hint(
+                    self.sync_all,
+                    report.fetched,
+                    self.herald.config.sync.default_limit,
+                );
                 self.status = StatusMessage::info(format!(
                     "同步完成：新邮件 {} 封，处理 {} 封，正文缓存 {} 封{}{hint}",
                     report.new_count,
@@ -1469,7 +1568,15 @@ impl App {
     }
 
     pub fn status_text(&self) -> String {
-        self.status.text.clone()
+        if !self.syncing {
+            return self.status.text.clone();
+        }
+        let base = self.status.text.trim();
+        if base.is_empty() || base == "就绪" || base.starts_with("同步") {
+            "同步中…".to_string()
+        } else {
+            format!("同步中… · {base}")
+        }
     }
 }
 

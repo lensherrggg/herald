@@ -1,6 +1,7 @@
 #[cfg(feature = "semantic")]
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::config::{AccountConfig, Config};
 use crate::credentials::CredentialResolver;
@@ -26,7 +27,7 @@ pub struct Herald {
     pub config: Config,
     pub paths: ResolvedPaths,
     pub store: Store,
-    credentials: CredentialResolver,
+    credentials: Arc<CredentialResolver>,
     #[cfg(feature = "semantic")]
     semantic: SemanticService,
     demo: Option<crate::demo::DemoSession>,
@@ -78,7 +79,7 @@ impl Herald {
             config,
             paths,
             store,
-            credentials: CredentialResolver::new(),
+            credentials: Arc::new(CredentialResolver::new()),
             #[cfg(feature = "semantic")]
             semantic,
             demo,
@@ -97,6 +98,41 @@ impl Herald {
 
     pub fn demo_active(&self) -> bool {
         self.demo.is_some()
+    }
+
+    /// Open an independent connection for background work such as a TUI sync.
+    /// The caller keeps the primary instance (and any demo server) alive; this
+    /// instance only shares the SQLite database through WAL. Pass the primary
+    /// resolver so `cred-cmd` results stay cached across background syncs.
+    pub fn open_background(
+        config: Config,
+        paths: ResolvedPaths,
+        credentials: Arc<CredentialResolver>,
+    ) -> Result<Self> {
+        let store = Store::open(&paths.database_path)?;
+        for account in &config.accounts {
+            store.ensure_account(account)?;
+        }
+        #[cfg(feature = "semantic")]
+        let semantic = SemanticService::new(
+            &config,
+            paths.models_dir.clone(),
+            paths.tokenizer_dir.clone(),
+        );
+        Ok(Self {
+            config,
+            paths,
+            store,
+            credentials,
+            #[cfg(feature = "semantic")]
+            semantic,
+            demo: None,
+        })
+    }
+
+    /// Share this instance's credential cache with a background worker.
+    pub fn credential_resolver(&self) -> Arc<CredentialResolver> {
+        Arc::clone(&self.credentials)
     }
 
     fn log_startup(&self) {

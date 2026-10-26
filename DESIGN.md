@@ -330,7 +330,7 @@ download(options)
 
 ## 11. TUI 设计
 
-TUI 以 `herald-tui` 库的形式编译进 `herald`，入口为 `herald tui [--account <name>]`，不再单独生成可执行文件。ratatui + crossterm 负责渲染，同步阻塞调用放在 App 持有的专用 Tokio Runtime 上，UI 状态全部集中在 `App`。
+TUI 以 `herald-tui` 库的形式编译进 `herald`，入口为 `herald tui [--account <name>]`，不再单独生成可执行文件。ratatui + crossterm 负责渲染，UI 状态全部集中在 `App`；同步在独立线程执行，其余阻塞调用仍放在 App 持有的专用 Tokio Runtime 上。
 
 ### 11.1 状态机
 
@@ -343,7 +343,9 @@ App
 └─ Browser { dir, entries, selected, filename, filename_focus, uidl, index }
 ```
 
-- 同步、未缓存正文、原文、导出等阻塞操作通过 `app.runtime.block_on` 执行；UI 线程只在事件循环中重绘。
+- 同步在独立线程执行：后台通过 `Herald::open_background` 用同一配置/路径再开一个 SQLite 连接（WAL），网络、写入和 embedding 都在该线程完成；不重复启动 demo 服务器，临时库与主实例共享。UI 事件循环在同步期间改用 150ms `event::poll`，继续处理按键并轮询结果通道；完成后统一 `reload()`。后台实例的语义服务是独立的，首次需要写入 embedding 时会加载第二份模型。
+- 同步期间状态栏固定带「同步中…」前缀，其他状态消息附在其后；空闲后恢复普通绿色状态栏。
+- 未缓存正文、原文、导出等阻塞操作仍通过 `app.runtime.block_on` 执行；UI 线程只在事件循环中重绘。
 - 切换账户/分页/排序/搜索后统一 `reload()`：重查列表、夹取页码，并对当前选择调用 `preview_selected()`。
 - `preview_selected()` 只用 `get_stored_message` 读本地 SQLite（头部、已缓存正文、附件元数据），移动选择不产生网络请求；正文未缓存时显示提示，按 `Enter` 才 RETR。
 - 搜索框 `Tab` 循环检索模式，`Ctrl+F` 循环字段；字段非 `all` 时强制关键词模式，与服务层规则一致。每页条数取自 `[ui] page_size`。
